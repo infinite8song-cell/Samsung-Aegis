@@ -126,16 +126,16 @@ class GerritClient:
         resp.raise_for_status()
         return resp.text
 
-    def get_change_info(self, change_number: int) -> dict:
-        return self._get(f"/changes/{change_number}")
+    def get_change_detail(self, change_number: int) -> dict:
+        return self._get(f"/changes/{change_number}/detail")
 
     def get_latest_revision(self, change_number: int) -> str:
-        info = self.get_change_info(change_number)
-        return info["current_revision"]
+        detail = self.get_change_detail(change_number)
+        return detail["current_revision"]
 
     def get_change_diff(self, change_number: int) -> GerritChange:
         """Fetch the full diff for the latest patchset of a change."""
-        detail = self.get_change_info(change_number)
+        detail = self.get_change_detail(change_number)
         revision = detail["current_revision"]
         rev_info = detail["revisions"][revision]
 
