@@ -13,6 +13,8 @@ import click
 ENV_GERRIT_USERNAME = "GERRIT_USERNAME"
 ENV_GERRIT_PASSWORD = "GERRIT_PASSWORD"
 ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
+ENV_OPENAI_API_BASE = "OPENAI_API_BASE"
+ENV_METIS_MODEL = "METIS_MODEL"
 
 
 def _get_gerrit_auth(cli_user: str | None, cli_pass: str | None) -> tuple[str, str] | None:
@@ -51,12 +53,26 @@ def _check_metis_availability() -> None:
     else:
         click.echo("  Metis CLI: not in PATH")
 
-    # Check LLM API key
-    if os.environ.get(ENV_OPENAI_API_KEY):
+    # Check vLLM endpoint config
+    api_key = os.environ.get(ENV_OPENAI_API_KEY)
+    api_base = os.environ.get(ENV_OPENAI_API_BASE)
+    model = os.environ.get(ENV_METIS_MODEL)
+
+    if api_key and api_base:
+        click.echo(f"  vLLM endpoint: {api_base}")
         click.echo(f"  {ENV_OPENAI_API_KEY}: set")
+        if model:
+            click.echo(f"  {ENV_METIS_MODEL}: {model}")
     else:
-        click.secho(f"  {ENV_OPENAI_API_KEY}: NOT SET "
-                     "(required for Metis AI analysis)", fg="yellow")
+        missing = []
+        if not api_key:
+            missing.append(ENV_OPENAI_API_KEY)
+        if not api_base:
+            missing.append(ENV_OPENAI_API_BASE)
+        click.secho(
+            f"  {', '.join(missing)}: NOT SET "
+            "(required for Metis vLLM analysis)", fg="yellow",
+        )
         click.echo("    -> Heuristic fallback will be used instead")
 
 from gerrit_fuzzer.gerrit_client import fetch_gerrit_diff

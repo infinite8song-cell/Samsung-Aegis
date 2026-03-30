@@ -4,6 +4,11 @@ Metis integration strategy (in priority order):
   1. Python API - import metis directly and call MetisEngine.review_patch()
   2. CLI subprocess - call `metis --non-interactive --command "review_patch ..."`
   3. Heuristic fallback - regex-based pattern matching for common C/C++ vulnerabilities
+
+Environment variables:
+  OPENAI_API_KEY  - API key for vLLM / OpenAI-compatible endpoint
+  OPENAI_API_BASE - Base URL for vLLM / OpenAI-compatible endpoint
+  METIS_MODEL     - LLM model name (optional, default: from metis.yaml)
 """
 
 import json
@@ -17,6 +22,11 @@ from pathlib import Path
 from gerrit_fuzzer.gerrit_client import GerritChange, FileDiff
 
 logger = logging.getLogger(__name__)
+
+# Environment variable names
+ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
+ENV_OPENAI_API_BASE = "OPENAI_API_BASE"
+ENV_METIS_MODEL = "METIS_MODEL"
 
 
 @dataclass
@@ -271,31 +281,71 @@ class MetisAnalyzer:
         result.analysis_method = "heuristic"
         return result
 
-    def _try_python_api(self, diff_file: Path,
-                        work_dir: Path) -> list[SecurityFinding] | None:
-        """Try to use Metis Python API directly."""
+    def _build_runtime_config(self) -> dict:
+        """Build Metis runtime config using vLLM provider with env vars.
+
+        Reads from environment:
+          OPENAI_API_KEY  - API key for vLLM endpoint
+          OPENAI_API_BASE - Base URL for vLLM endpoint
+          METIS_MODEL     - LLM model name (optional)
+        """
+        api_key = os.environ.get(ENV_OPENAI_API_KEY, "")
+        api_base = os.environ.get(ENV_OPENAI_API_BASE, "")
+
+        if not api_key or not api_base:
+            return {}
+
+        # Start with defaults from metis.yaml (engine/query settings)
         try:
             from metis.configuration import load_runtime_config
+            runtime = load_runtime_config()
+        except Exception:
+            # Build minimal config if metis.yaml is not available
+            runtime = {
+                "max_token_length": 250000,
+                "max_workers": 5,
+                "embed_dim": 3072,
+                "doc_chunk_size": 1024,
+                "doc_chunk_overlap": 200,
+                "similarity_top_k": 5,
+                "response_mode": "tree_summarize",
+            }
+
+        model = self.model or os.environ.get(ENV_METIS_MODEL) or \
+                runtime.get("model", "")
+
+        # Override to vLLM provider
+        runtime["llm_provider_name"] = "vllm"
+        runtime["llm_api_key"] = api_key
+        runtime["openai_api_base"] = api_base
+        runtime["openai_default_headers"] = {}
+        runtime["model"] = model
+        runtime["llama_query_model"] = model
+        runtime["force_openai_like"] = True
+
+        return runtime
+
+    def _try_python_api(self, diff_file: Path,
+                        work_dir: Path) -> list[SecurityFinding] | None:
+        """Try to use Metis Python API with vLLM provider."""
+        try:
             from metis.engine import MetisEngine
             from metis.providers.registry import get_provider
         except ImportError:
             logger.debug("Metis Python package not installed.")
             return None
 
+        runtime = self._build_runtime_config()
+        if not runtime:
+            logger.warning(
+                "Metis Python API skipped: %s and %s must be set.",
+                ENV_OPENAI_API_KEY, ENV_OPENAI_API_BASE,
+            )
+            return None
+
         try:
-            # Load Metis configuration (from metis.yaml or package defaults)
-            runtime = load_runtime_config()
-
-            # Override LLM provider if specified
-            if self.llm_provider:
-                runtime["llm_provider_name"] = self.llm_provider
-            if self.model:
-                runtime["model"] = self.model
-                runtime["llama_query_model"] = self.model
-
-            # Build LLM provider
-            llm_provider_name = runtime.get("llm_provider_name", "openai")
-            provider_cls = get_provider(llm_provider_name)
+            # Build vLLM provider
+            provider_cls = get_provider("vllm")
             llm_provider = provider_cls(runtime)
 
             # Build vector backend (ChromaDB)
@@ -317,7 +367,7 @@ class MetisAnalyzer:
                 **runtime,
             )
 
-            logger.info("Running Metis review_patch via Python API...")
+            logger.info("Running Metis review_patch via vLLM Python API...")
             results = engine.review_patch(patch_file=str(diff_file))
 
             # Parse results
@@ -329,6 +379,44 @@ class MetisAnalyzer:
             logger.warning("Metis Python API failed: %s", e)
             return None
 
+    def _write_metis_yaml(self, work_dir: Path) -> None:
+        """Write a metis.yaml configured for vLLM into the work directory."""
+        import yaml
+
+        api_key = os.environ.get(ENV_OPENAI_API_KEY, "")
+        api_base = os.environ.get(ENV_OPENAI_API_BASE, "")
+        model = self.model or os.environ.get(ENV_METIS_MODEL, "")
+
+        if not api_key or not api_base:
+            return
+
+        config = {
+            "llm_provider": {
+                "name": "vllm",
+                "model": model,
+                "api_key": api_key,
+                "base_url": api_base,
+                "code_embedding_model": "text-embedding-3-large",
+                "docs_embedding_model": "text-embedding-3-large",
+            },
+            "metis_engine": {
+                "max_token_length": 250000,
+                "max_workers": 5,
+                "embed_dim": 3072,
+            },
+            "query": {
+                "similarity_top_k": 5,
+                "response_mode": "tree_summarize",
+                "max_tokens": 5000,
+                "temperature": 0.0,
+            },
+        }
+
+        yaml_path = work_dir / "metis.yaml"
+        yaml_path.write_text(yaml.dump(config, default_flow_style=False),
+                             encoding="utf-8")
+        logger.debug("Wrote vLLM metis.yaml to %s", yaml_path)
+
     def _try_cli(self, diff_file: Path,
                  work_dir: Path) -> list[SecurityFinding] | None:
         """Try to run Metis via CLI subprocess."""
@@ -337,6 +425,9 @@ class MetisAnalyzer:
         if not metis_bin:
             logger.debug("Metis CLI binary not found in PATH.")
             return None
+
+        # Write metis.yaml with vLLM config into work_dir
+        self._write_metis_yaml(work_dir)
 
         output_json = work_dir / "metis_output.json"
         output_sarif = work_dir / "metis_output.sarif"
