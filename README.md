@@ -53,12 +53,34 @@ sudo ./scripts/setup_libfuzzer.sh
 pip install metis-ai
 ```
 
+## Environment Variables
+
+| 변수명 | 설명 | 예시 |
+|---|---|---|
+| `GERRIT_USERNAME` | Gerrit HTTP 인증 사용자명 | `myuser` |
+| `GERRIT_PASSWORD` | Gerrit HTTP 인증 비밀번호 | `mypassword` |
+| `METIS_CMD` | ARM Metis CLI 바이너리 경로 | `/opt/metis/bin/metis` |
+
+CLI 옵션(`--gerrit-user`, `--gerrit-pass`, `--metis-cmd`)이 환경변수보다 우선합니다.
+
+```bash
+# 환경변수 설정 예시
+export GERRIT_USERNAME="myuser"
+export GERRIT_PASSWORD="mypassword"
+export METIS_CMD="/opt/metis/bin/metis"
+```
+
 ## Usage
 
 ### Full Pipeline (fetch -> analyze -> generate -> fuzz)
 
 ```bash
+# 환경변수에 인증 정보가 설정되어 있으면 자동으로 사용
 gerrit-fuzzer run https://gerrit.example.com/c/project/+/12345
+
+# 또는 CLI 옵션으로 직접 지정 (환경변수보다 우선)
+gerrit-fuzzer run https://gerrit.example.com/c/project/+/12345 \
+    --gerrit-user myuser --gerrit-pass mypass
 ```
 
 ### Options
@@ -66,13 +88,13 @@ gerrit-fuzzer run https://gerrit.example.com/c/project/+/12345
 ```bash
 gerrit-fuzzer run <GERRIT_URL> \
     --output-dir ./fuzz_output \       # Output directory
-    --metis-cmd /path/to/metis \       # Metis binary path
+    --metis-cmd /path/to/metis \       # Metis binary path (default: $METIS_CMD)
     --llm-provider openai \            # LLM provider for Metis
     --model gpt-4 \                    # LLM model
     --fuzz-time 600 \                  # Fuzzing duration (seconds)
     --jobs 4 \                         # Parallel fuzzing jobs
-    --gerrit-user myuser \             # Gerrit authentication
-    --gerrit-pass mypass \
+    --gerrit-user myuser \             # Gerrit auth (default: $GERRIT_USERNAME)
+    --gerrit-pass mypass \             # Gerrit auth (default: $GERRIT_PASSWORD)
     --no-verify-ssl \                  # Skip SSL verification
     -v                                 # Verbose logging
 ```
