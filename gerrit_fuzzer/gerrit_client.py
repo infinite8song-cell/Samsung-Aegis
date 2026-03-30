@@ -112,22 +112,25 @@ class GerritClient:
         self.session.verify = verify_ssl
         self.session.headers.update({"Accept": "application/json"})
 
-    def _get(self, endpoint: str) -> dict | list:
+    def _get(self, endpoint: str, params: dict | None = None) -> dict | list:
         url = f"{self.base_url}/a{endpoint}" if self.session.auth else \
               f"{self.base_url}{endpoint}"
-        resp = self.session.get(url)
+        resp = self.session.get(url, params=params)
         resp.raise_for_status()
         return json.loads(_strip_gerrit_prefix(resp.text))
 
-    def _get_text(self, endpoint: str) -> str:
+    def _get_text(self, endpoint: str, params: dict | None = None) -> str:
         url = f"{self.base_url}/a{endpoint}" if self.session.auth else \
               f"{self.base_url}{endpoint}"
-        resp = self.session.get(url)
+        resp = self.session.get(url, params=params)
         resp.raise_for_status()
         return resp.text
 
     def get_change_detail(self, change_number: int) -> dict:
-        return self._get(f"/changes/{change_number}/detail")
+        return self._get(
+            f"/changes/{change_number}/detail",
+            params={"o": ["CURRENT_REVISION", "CURRENT_FILES"]},
+        )
 
     def get_latest_revision(self, change_number: int) -> str:
         detail = self.get_change_detail(change_number)
