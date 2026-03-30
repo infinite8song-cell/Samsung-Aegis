@@ -66,7 +66,7 @@ class TestHeuristicAnalysis:
                 ),
             ],
         )
-        analyzer = MetisAnalyzer(metis_cmd="/nonexistent")
+        analyzer = MetisAnalyzer()
         result = analyzer.analyze_diff(change)
         assert len(result.findings) > 0
         assert result.findings[0].category == "buffer-overflow"
@@ -86,7 +86,7 @@ class TestHeuristicAnalysis:
                 ),
             ],
         )
-        analyzer = MetisAnalyzer(metis_cmd="/nonexistent")
+        analyzer = MetisAnalyzer()
         result = analyzer.analyze_diff(change)
         assert any(f.category == "buffer-overflow" for f in result.findings)
 
@@ -105,7 +105,7 @@ class TestHeuristicAnalysis:
                 ),
             ],
         )
-        analyzer = MetisAnalyzer(metis_cmd="/nonexistent")
+        analyzer = MetisAnalyzer()
         result = analyzer.analyze_diff(change)
         assert len(result.findings) == 0
 

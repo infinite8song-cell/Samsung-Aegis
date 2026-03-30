@@ -12,6 +12,7 @@ import click
 # Environment variable names
 ENV_GERRIT_USERNAME = "GERRIT_USERNAME"
 ENV_GERRIT_PASSWORD = "GERRIT_PASSWORD"
+ENV_OPENAI_API_KEY = "OPENAI_API_KEY"
 
 
 def _get_gerrit_auth(cli_user: str | None, cli_pass: str | None) -> tuple[str, str] | None:
@@ -29,6 +30,34 @@ def _get_gerrit_auth(cli_user: str | None, cli_pass: str | None) -> tuple[str, s
             "Set %s or use --gerrit-pass.", ENV_GERRIT_PASSWORD,
         )
     return None
+
+
+def _check_metis_availability() -> None:
+    """Print Metis availability status for the user."""
+    import shutil
+
+    # Check Python API
+    try:
+        from metis.engine import MetisEngine  # noqa: F401
+        click.echo("  Metis Python API: available")
+    except ImportError:
+        click.echo("  Metis Python API: not installed "
+                    "(run: scripts/setup_metis.sh)")
+
+    # Check CLI
+    metis_bin = shutil.which("metis")
+    if metis_bin:
+        click.echo(f"  Metis CLI: {metis_bin}")
+    else:
+        click.echo("  Metis CLI: not in PATH")
+
+    # Check LLM API key
+    if os.environ.get(ENV_OPENAI_API_KEY):
+        click.echo(f"  {ENV_OPENAI_API_KEY}: set")
+    else:
+        click.secho(f"  {ENV_OPENAI_API_KEY}: NOT SET "
+                     "(required for Metis AI analysis)", fg="yellow")
+        click.echo("    -> Heuristic fallback will be used instead")
 
 from gerrit_fuzzer.gerrit_client import fetch_gerrit_diff
 from gerrit_fuzzer.metis_analyzer import MetisAnalyzer, AnalysisResult
@@ -130,11 +159,13 @@ def run(gerrit_url, output_dir, llm_provider, model, no_fuzz,
 
     # Step 2: Analyze with Metis
     click.echo(f"\n[2/4] Analyzing diff with Metis...")
+    _check_metis_availability()
     analyzer = MetisAnalyzer(
         llm_provider=llm_provider, model=model,
     )
     analysis = analyzer.analyze_diff(change, work_dir=out / "metis_work")
 
+    click.echo(f"  Analysis method: {analysis.analysis_method}")
     click.echo(f"  Total findings: {len(analysis.findings)}")
     click.echo(f"  Fuzzable findings: {len(analysis.fuzzable_findings)}")
     for f in analysis.findings:

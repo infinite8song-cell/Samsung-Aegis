@@ -1,7 +1,14 @@
-"""Integration with ARM Metis for AI-driven security analysis of diffs."""
+"""Integration with ARM Metis for AI-driven security analysis of diffs.
+
+Metis integration strategy (in priority order):
+  1. Python API - import metis directly and call MetisEngine.review_patch()
+  2. CLI subprocess - call `metis --non-interactive --command "review_patch ..."`
+  3. Heuristic fallback - regex-based pattern matching for common C/C++ vulnerabilities
+"""
 
 import json
 import logging
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -49,6 +56,7 @@ class AnalysisResult:
     findings: list[SecurityFinding] = field(default_factory=list)
     raw_sarif: dict | None = None
     analyzed_files: list[str] = field(default_factory=list)
+    analysis_method: str = ""  # "metis-api", "metis-cli", "heuristic"
 
     @property
     def fuzzable_findings(self) -> list[SecurityFinding]:
@@ -97,6 +105,65 @@ def _parse_sarif(sarif: dict) -> list[SecurityFinding]:
                     snippet=phys.get("contextRegion", {}).get("snippet", {}).get("text", ""),
                     cwe_id=_extract_cwe(rule_info),
                 ))
+
+    return findings
+
+
+def _parse_metis_json(data: dict) -> list[SecurityFinding]:
+    """Parse Metis native JSON output (non-SARIF) into SecurityFinding objects."""
+    findings = []
+
+    reviews = data.get("reviews", [])
+    if isinstance(reviews, list):
+        for review in reviews:
+            file_path = review.get("file", review.get("filename", ""))
+            issues = review.get("issues", review.get("findings", []))
+            if isinstance(issues, str):
+                # Sometimes Metis returns review text as a string
+                findings.append(SecurityFinding(
+                    rule_id="metis-review",
+                    severity="medium",
+                    message=issues,
+                    file_path=file_path,
+                    start_line=0,
+                    end_line=0,
+                    category=_infer_category("metis", issues),
+                    confidence=0.7,
+                ))
+                continue
+            for issue in (issues if isinstance(issues, list) else []):
+                msg = issue if isinstance(issue, str) else issue.get(
+                    "description", issue.get("message", str(issue))
+                )
+                line = 0 if isinstance(issue, str) else issue.get("line", 0)
+                sev = "medium" if isinstance(issue, str) else issue.get(
+                    "severity", "medium"
+                )
+                findings.append(SecurityFinding(
+                    rule_id="metis-review",
+                    severity=sev,
+                    message=msg,
+                    file_path=file_path,
+                    start_line=line,
+                    end_line=line,
+                    category=_infer_category("metis", msg),
+                    confidence=0.7,
+                    snippet=issue.get("snippet", "") if isinstance(issue, dict) else "",
+                ))
+
+    # Handle "overall_changes" summary
+    overall = data.get("overall_changes", "")
+    if overall and not findings:
+        findings.append(SecurityFinding(
+            rule_id="metis-summary",
+            severity="medium",
+            message=overall,
+            file_path="",
+            start_line=0,
+            end_line=0,
+            category=_infer_category("metis", overall),
+            confidence=0.6,
+        ))
 
     return findings
 
@@ -154,88 +221,188 @@ def _extract_cwe(rule_info: dict) -> str:
 
 
 class MetisAnalyzer:
-    """Orchestrates Metis analysis on Gerrit diffs."""
+    """Orchestrates Metis analysis on Gerrit diffs.
 
-    def __init__(self, metis_cmd: str = "metis",
-                 llm_provider: str | None = None,
+    Tries three strategies in order:
+      1. Python API (import metis.engine.MetisEngine)
+      2. CLI subprocess (metis --non-interactive)
+      3. Heuristic regex fallback
+    """
+
+    def __init__(self, llm_provider: str | None = None,
                  model: str | None = None):
-        self.metis_cmd = metis_cmd
         self.llm_provider = llm_provider
         self.model = model
 
     def analyze_diff(self, change: GerritChange,
                      work_dir: Path | None = None) -> AnalysisResult:
-        """Run Metis review_patch on the Gerrit diff."""
+        """Run Metis analysis on the Gerrit diff."""
         if work_dir is None:
             tmp = tempfile.mkdtemp(prefix="gerrit_fuzzer_")
             work_dir = Path(tmp)
+        work_dir.mkdir(parents=True, exist_ok=True)
 
         diff_file = work_dir / "change.diff"
         diff_file.write_text(change.raw_diff, encoding="utf-8")
 
-        sarif_file = work_dir / "findings.sarif"
         result = AnalysisResult(
             analyzed_files=[fd.new_path for fd in change.file_diffs],
         )
 
-        cmd = [
-            self.metis_cmd,
-            "--non-interactive",
-            "--command", "review_patch",
-            str(diff_file),
-            "--output", str(sarif_file),
-            "--format", "sarif",
-        ]
-        if self.llm_provider:
-            cmd.extend(["--llm-provider", self.llm_provider])
-        if self.model:
-            cmd.extend(["--model", self.model])
+        # Strategy 1: Python API
+        findings = self._try_python_api(diff_file, work_dir)
+        if findings is not None:
+            result.findings = findings
+            result.analysis_method = "metis-api"
+            logger.info("Metis Python API analysis: %d findings", len(findings))
+            return result
 
-        logger.info("Running Metis: %s", " ".join(cmd))
+        # Strategy 2: CLI subprocess
+        findings = self._try_cli(diff_file, work_dir)
+        if findings is not None:
+            result.findings = findings
+            result.analysis_method = "metis-cli"
+            logger.info("Metis CLI analysis: %d findings", len(findings))
+            return result
+
+        # Strategy 3: Heuristic fallback
+        logger.warning("Metis unavailable. Using heuristic analysis.")
+        result.findings = self._heuristic_analysis(change)
+        result.analysis_method = "heuristic"
+        return result
+
+    def _try_python_api(self, diff_file: Path,
+                        work_dir: Path) -> list[SecurityFinding] | None:
+        """Try to use Metis Python API directly."""
+        try:
+            from metis.configuration import load_runtime_config
+            from metis.engine import MetisEngine
+            from metis.providers.registry import get_provider
+        except ImportError:
+            logger.debug("Metis Python package not installed.")
+            return None
+
+        try:
+            # Load Metis configuration (from metis.yaml or package defaults)
+            runtime = load_runtime_config()
+
+            # Override LLM provider if specified
+            if self.llm_provider:
+                runtime["llm_provider_name"] = self.llm_provider
+            if self.model:
+                runtime["model"] = self.model
+                runtime["llama_query_model"] = self.model
+
+            # Build LLM provider
+            llm_provider_name = runtime.get("llm_provider_name", "openai")
+            provider_cls = get_provider(llm_provider_name)
+            llm_provider = provider_cls(runtime)
+
+            # Build vector backend (ChromaDB)
+            embed_model_code = llm_provider.get_embed_model_code()
+            embed_model_docs = llm_provider.get_embed_model_docs()
+
+            from metis.cli.utils import build_chroma_backend
+            import argparse
+            args = argparse.Namespace(chroma_dir=str(work_dir / "chromadb"))
+            vector_backend = build_chroma_backend(
+                args, runtime, embed_model_code, embed_model_docs,
+            )
+
+            # Create engine and run review_patch
+            engine = MetisEngine(
+                codebase_path=str(work_dir),
+                llm_provider=llm_provider,
+                vector_backend=vector_backend,
+                **runtime,
+            )
+
+            logger.info("Running Metis review_patch via Python API...")
+            results = engine.review_patch(patch_file=str(diff_file))
+
+            # Parse results
+            if isinstance(results, dict):
+                return _parse_metis_json(results)
+            return []
+
+        except Exception as e:
+            logger.warning("Metis Python API failed: %s", e)
+            return None
+
+    def _try_cli(self, diff_file: Path,
+                 work_dir: Path) -> list[SecurityFinding] | None:
+        """Try to run Metis via CLI subprocess."""
+        import shutil
+        metis_bin = shutil.which("metis")
+        if not metis_bin:
+            logger.debug("Metis CLI binary not found in PATH.")
+            return None
+
+        output_json = work_dir / "metis_output.json"
+        output_sarif = work_dir / "metis_output.sarif"
+
+        # Metis CLI: metis --non-interactive --command "review_patch <file>"
+        #            --output-file <output> [--output-file <sarif>]
+        cmd = [
+            metis_bin,
+            "--non-interactive",
+            "--command", f"review_patch {diff_file}",
+            "--output-file", str(output_json),
+            "--output-file", str(output_sarif),
+            "--chroma-dir", str(work_dir / "chromadb"),
+            "--codebase-path", str(work_dir),
+        ]
+
+        logger.info("Running Metis CLI: %s", " ".join(cmd))
 
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=600,
                 cwd=str(work_dir),
             )
-            if proc.returncode != 0:
-                logger.warning("Metis exited with code %d: %s",
-                               proc.returncode, proc.stderr)
-                # Try to parse any partial output
-                if sarif_file.exists():
-                    sarif = json.loads(sarif_file.read_text())
-                    result.raw_sarif = sarif
-                    result.findings = _parse_sarif(sarif)
-                else:
-                    # Fall back to heuristic analysis
-                    result.findings = self._heuristic_analysis(change)
-                return result
 
-            if sarif_file.exists():
-                sarif = json.loads(sarif_file.read_text())
-                result.raw_sarif = sarif
-                result.findings = _parse_sarif(sarif)
-            else:
-                # Check stdout for JSON output
+            if proc.returncode != 0:
+                logger.warning("Metis CLI exited with code %d: %s",
+                               proc.returncode, proc.stderr[:500])
+
+            # Try SARIF output first
+            if output_sarif.exists():
                 try:
-                    output = json.loads(proc.stdout)
-                    if "$schema" in str(output):
-                        result.raw_sarif = output
-                        result.findings = _parse_sarif(output)
+                    sarif = json.loads(output_sarif.read_text())
+                    if "runs" in sarif:
+                        return _parse_sarif(sarif)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+            # Try JSON output
+            if output_json.exists():
+                try:
+                    data = json.loads(output_json.read_text())
+                    if "$schema" in str(data) and "runs" in data:
+                        return _parse_sarif(data)
+                    return _parse_metis_json(data)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+            # Try parsing stdout
+            if proc.stdout.strip():
+                try:
+                    data = json.loads(proc.stdout)
+                    return _parse_metis_json(data)
                 except (json.JSONDecodeError, TypeError):
-                    result.findings = self._heuristic_analysis(change)
+                    pass
+
+            if proc.returncode == 0:
+                return []  # Metis ran but found nothing
+
+            return None
 
         except FileNotFoundError:
-            logger.warning(
-                "Metis not found at '%s'. Falling back to heuristic analysis.",
-                self.metis_cmd,
-            )
-            result.findings = self._heuristic_analysis(change)
+            logger.debug("Metis binary disappeared: %s", metis_bin)
+            return None
         except subprocess.TimeoutExpired:
-            logger.warning("Metis analysis timed out.")
-            result.findings = self._heuristic_analysis(change)
-
-        return result
+            logger.warning("Metis CLI timed out after 600s.")
+            return None
 
     def _heuristic_analysis(self, change: GerritChange) -> list[SecurityFinding]:
         """Fallback: pattern-based analysis when Metis is unavailable."""
@@ -290,8 +457,7 @@ class MetisAnalyzer:
 
 
 def analyze_gerrit_change(change: GerritChange,
-                          metis_cmd: str = "metis",
                           work_dir: Path | None = None) -> AnalysisResult:
     """Convenience function to analyze a Gerrit change."""
-    analyzer = MetisAnalyzer(metis_cmd=metis_cmd)
+    analyzer = MetisAnalyzer()
     return analyzer.analyze_diff(change, work_dir=work_dir)

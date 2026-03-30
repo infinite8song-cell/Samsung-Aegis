@@ -35,23 +35,56 @@ Gerrit URL ──> Gerrit REST API ──> Diff 추출
 
 ## Requirements
 
-- Python >= 3.10
+- Python >= 3.10 (프로젝트 자체)
+- Python >= 3.12 (ARM Metis 실행 시)
 - clang/clang++ with LibFuzzer support (compiler-rt)
-- ARM Metis (optional, falls back to heuristic analysis)
+- ARM Metis + LLM API Key (선택 - 없으면 휴리스틱 분석으로 폴백)
 
 ## Installation
 
 ```bash
-# Install the Python package
+# 1. 프로젝트 설치
 pip install -e .
 
-# Install clang + LibFuzzer (Ubuntu/Debian/Fedora/Arch)
+# 2. clang + LibFuzzer 설치 (Ubuntu/Debian/Fedora/Arch)
 chmod +x scripts/setup_libfuzzer.sh
 sudo ./scripts/setup_libfuzzer.sh
 
-# Optional: Install ARM Metis for AI-powered analysis
-pip install metis-ai
+# 3. ARM Metis 설치 (GitHub에서 클론 + Python 3.12 venv)
+chmod +x scripts/setup_metis.sh
+./scripts/setup_metis.sh
 ```
+
+### ARM Metis 설치 상세
+
+Metis는 PyPI에 없으며, GitHub 소스에서 직접 설치해야 합니다.
+`scripts/setup_metis.sh` 스크립트가 자동으로 처리합니다:
+
+1. Python 3.12+ 확인/설치 (deadsnakes PPA 사용)
+2. `https://github.com/arm/metis.git` 클론 → `~/.local/share/metis`
+3. 전용 venv 생성 후 `pip install -e .`
+4. `~/.local/bin/metis` 심볼릭 링크 생성
+
+수동 설치:
+
+```bash
+git clone https://github.com/arm/metis.git
+cd metis
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+metis --version
+```
+
+### Metis 분석 전략 (우선순위)
+
+| 순서 | 방법 | 조건 |
+|---|---|---|
+| 1 | **Python API** | `metis` 패키지가 import 가능 + `OPENAI_API_KEY` 설정 |
+| 2 | **CLI subprocess** | `metis` 바이너리가 PATH에 존재 |
+| 3 | **Heuristic fallback** | Metis 미설치 시 자동 - 10개 C/C++ 위험 패턴 정규식 |
+
+Metis가 설치되지 않아도 프로젝트는 정상 동작합니다 (heuristic 모드).
 
 ## Environment Variables
 
@@ -61,6 +94,13 @@ pip install metis-ai
 |---|---|---|---|
 | `GERRIT_USERNAME` | Gerrit HTTP 인증 사용자명 | Gerrit 인증 시 필수 | _(없음)_ |
 | `GERRIT_PASSWORD` | Gerrit HTTP 인증 비밀번호 | Gerrit 인증 시 필수 | _(없음)_ |
+| `OPENAI_API_KEY` | OpenAI API 키 (Metis AI 분석용) | Metis 사용 시 필수 | _(없음)_ |
+
+Metis는 LLM 기반 분석 도구이므로 `OPENAI_API_KEY`가 필요합니다.
+OpenAI 외 다른 LLM 프로바이더를 사용하려면 `metis.yaml`을 수정하세요:
+- Azure OpenAI: `AZURE_OPENAI_API_KEY`
+- vLLM: `VLLM_API_KEY`
+- Ollama: API 키 불필요 (로컬 실행)
 
 > **우선순위**: CLI 옵션 (`--gerrit-user`, `--gerrit-pass`) > 환경변수
 >
@@ -73,6 +113,7 @@ pip install metis-ai
 ```bash
 export GERRIT_USERNAME="myuser"
 export GERRIT_PASSWORD="mypassword"
+export OPENAI_API_KEY="sk-..."    # Metis AI 분석에 필요
 ```
 
 #### 2. 셸 프로필에 영구 등록 (~/.bashrc 또는 ~/.zshrc)
@@ -81,6 +122,7 @@ export GERRIT_PASSWORD="mypassword"
 # ~/.bashrc 또는 ~/.zshrc 끝에 추가
 echo 'export GERRIT_USERNAME="myuser"' >> ~/.bashrc
 echo 'export GERRIT_PASSWORD="mypassword"' >> ~/.bashrc
+echo 'export OPENAI_API_KEY="sk-..."' >> ~/.bashrc
 
 # 변경사항 적용
 source ~/.bashrc
@@ -95,6 +137,7 @@ source ~/.bashrc
 cat > .env << 'EOF'
 GERRIT_USERNAME=myuser
 GERRIT_PASSWORD=mypassword
+OPENAI_API_KEY=sk-...
 EOF
 
 # 실행 전 로드
@@ -134,7 +177,9 @@ export GERRIT_PASSWORD="your_generated_http_password"
 
 ```bash
 echo "GERRIT_USERNAME: ${GERRIT_USERNAME:-<not set>}"
-echo "GERRIT_PASSWORD: ${GERRIT_PASSWORD:+****}"  # 보안을 위해 값 숨김
+echo "GERRIT_PASSWORD: ${GERRIT_PASSWORD:+****}"    # 보안을 위해 값 숨김
+echo "OPENAI_API_KEY: ${OPENAI_API_KEY:+****}"      # 보안을 위해 값 숨김
+which metis 2>/dev/null && metis --version || echo "Metis: not installed"
 ```
 
 ## Usage
