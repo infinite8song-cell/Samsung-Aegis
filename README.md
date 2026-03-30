@@ -61,9 +61,8 @@ pip install metis-ai
 |---|---|---|---|
 | `GERRIT_USERNAME` | Gerrit HTTP 인증 사용자명 | Gerrit 인증 시 필수 | _(없음)_ |
 | `GERRIT_PASSWORD` | Gerrit HTTP 인증 비밀번호 | Gerrit 인증 시 필수 | _(없음)_ |
-| `METIS_CMD` | ARM Metis CLI 바이너리 경로 | 선택 | `metis` (PATH에서 탐색) |
 
-> **우선순위**: CLI 옵션 (`--gerrit-user`, `--gerrit-pass`, `--metis-cmd`) > 환경변수 > 기본값
+> **우선순위**: CLI 옵션 (`--gerrit-user`, `--gerrit-pass`) > 환경변수
 >
 > CLI 옵션을 지정하면 환경변수 값을 무시합니다. CLI 옵션이 없으면 환경변수를 자동으로 사용합니다.
 
@@ -74,7 +73,6 @@ pip install metis-ai
 ```bash
 export GERRIT_USERNAME="myuser"
 export GERRIT_PASSWORD="mypassword"
-export METIS_CMD="/opt/metis/bin/metis"
 ```
 
 #### 2. 셸 프로필에 영구 등록 (~/.bashrc 또는 ~/.zshrc)
@@ -83,7 +81,6 @@ export METIS_CMD="/opt/metis/bin/metis"
 # ~/.bashrc 또는 ~/.zshrc 끝에 추가
 echo 'export GERRIT_USERNAME="myuser"' >> ~/.bashrc
 echo 'export GERRIT_PASSWORD="mypassword"' >> ~/.bashrc
-echo 'export METIS_CMD="/opt/metis/bin/metis"' >> ~/.bashrc
 
 # 변경사항 적용
 source ~/.bashrc
@@ -98,7 +95,6 @@ source ~/.bashrc
 cat > .env << 'EOF'
 GERRIT_USERNAME=myuser
 GERRIT_PASSWORD=mypassword
-METIS_CMD=/opt/metis/bin/metis
 EOF
 
 # 실행 전 로드
@@ -132,24 +128,6 @@ export GERRIT_PASSWORD="your_generated_http_password"
 - `GERRIT_USERNAME`만 설정하고 `GERRIT_PASSWORD`를 누락하면 경고 메시지가 출력되며, 인증 없이 접속을 시도합니다.
 - 공개(anonymous) 접근이 가능한 Gerrit 서버라면 인증 환경변수를 설정하지 않아도 됩니다.
 
-### Metis 경로 설정 상세
-
-ARM Metis가 시스템 PATH에 없는 경우, 설치된 절대 경로를 지정합니다:
-
-```bash
-# pip으로 설치한 경우 (보통 PATH에 자동 등록)
-export METIS_CMD="metis"
-
-# 직접 빌드한 경우
-export METIS_CMD="/home/user/metis/build/bin/metis"
-
-# Docker로 실행하는 경우
-export METIS_CMD="docker run --rm -v $(pwd):/workspace metis"
-```
-
-- `METIS_CMD`를 설정하지 않으면 기본값 `metis`를 PATH에서 탐색합니다.
-- Metis가 설치되지 않은 경우에도 내장 휴리스틱 분석(정규식 기반 10개 C/C++ 취약점 패턴 탐지)으로 자동 폴백하여 동작합니다.
-
 ### 설정 확인
 
 환경변수가 올바르게 설정되었는지 확인합니다:
@@ -157,7 +135,6 @@ export METIS_CMD="docker run --rm -v $(pwd):/workspace metis"
 ```bash
 echo "GERRIT_USERNAME: ${GERRIT_USERNAME:-<not set>}"
 echo "GERRIT_PASSWORD: ${GERRIT_PASSWORD:+****}"  # 보안을 위해 값 숨김
-echo "METIS_CMD: ${METIS_CMD:-metis (default)}"
 ```
 
 ## Usage
@@ -178,7 +155,6 @@ gerrit-fuzzer run https://gerrit.example.com/c/project/+/12345 \
 ```bash
 gerrit-fuzzer run <GERRIT_URL> \
     --output-dir ./fuzz_output \       # Output directory
-    --metis-cmd /path/to/metis \       # Metis binary path (default: $METIS_CMD)
     --llm-provider openai \            # LLM provider for Metis
     --model gpt-4 \                    # LLM model
     --fuzz-time 600 \                  # Fuzzing duration (seconds)

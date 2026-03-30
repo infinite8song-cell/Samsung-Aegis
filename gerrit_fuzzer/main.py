@@ -12,9 +12,6 @@ import click
 # Environment variable names
 ENV_GERRIT_USERNAME = "GERRIT_USERNAME"
 ENV_GERRIT_PASSWORD = "GERRIT_PASSWORD"
-ENV_METIS_CMD = "METIS_CMD"
-
-DEFAULT_METIS_CMD = "metis"
 
 
 def _get_gerrit_auth(cli_user: str | None, cli_pass: str | None) -> tuple[str, str] | None:
@@ -32,16 +29,6 @@ def _get_gerrit_auth(cli_user: str | None, cli_pass: str | None) -> tuple[str, s
             "Set %s or use --gerrit-pass.", ENV_GERRIT_PASSWORD,
         )
     return None
-
-
-def _get_metis_cmd(cli_metis_cmd: str | None) -> str:
-    """Resolve Metis command path from CLI option or environment variable.
-
-    Priority: CLI option > environment variable > default 'metis'.
-    """
-    if cli_metis_cmd and cli_metis_cmd != DEFAULT_METIS_CMD:
-        return cli_metis_cmd
-    return os.environ.get(ENV_METIS_CMD, DEFAULT_METIS_CMD)
 
 from gerrit_fuzzer.gerrit_client import fetch_gerrit_diff
 from gerrit_fuzzer.metis_analyzer import MetisAnalyzer, AnalysisResult
@@ -74,8 +61,6 @@ def cli():
 @click.argument("gerrit_url")
 @click.option("-o", "--output-dir", type=click.Path(), default=None,
               help="Output directory for generated files (default: temp dir).")
-@click.option("--metis-cmd", default=None,
-              help="Path to Metis CLI binary (default: $METIS_CMD or 'metis').")
 @click.option("--llm-provider", default=None,
               help="LLM provider for Metis (e.g., openai, ollama).")
 @click.option("--model", default=None,
@@ -93,7 +78,7 @@ def cli():
 @click.option("--no-verify-ssl", is_flag=True,
               help="Disable SSL certificate verification.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output.")
-def run(gerrit_url, output_dir, metis_cmd, llm_provider, model, no_fuzz,
+def run(gerrit_url, output_dir, llm_provider, model, no_fuzz,
         fuzz_time, jobs, gerrit_user, gerrit_pass, no_verify_ssl, verbose):
     """Run the full pipeline: fetch diff -> analyze -> generate -> fuzz."""
     _setup_logging(verbose)
@@ -113,9 +98,8 @@ def run(gerrit_url, output_dir, metis_cmd, llm_provider, model, no_fuzz,
 
     click.echo(f"Output directory: {out}")
 
-    # Resolve credentials and tool paths from CLI / environment
+    # Resolve credentials from CLI / environment
     auth = _get_gerrit_auth(gerrit_user, gerrit_pass)
-    metis_cmd = _get_metis_cmd(metis_cmd)
 
     # Step 1: Fetch Gerrit diff
     click.echo(f"\n[1/4] Fetching diff from Gerrit: {gerrit_url}")
@@ -147,7 +131,7 @@ def run(gerrit_url, output_dir, metis_cmd, llm_provider, model, no_fuzz,
     # Step 2: Analyze with Metis
     click.echo(f"\n[2/4] Analyzing diff with Metis...")
     analyzer = MetisAnalyzer(
-        metis_cmd=metis_cmd, llm_provider=llm_provider, model=model,
+        llm_provider=llm_provider, model=model,
     )
     analysis = analyzer.analyze_diff(change, work_dir=out / "metis_work")
 
@@ -225,25 +209,22 @@ def run(gerrit_url, output_dir, metis_cmd, llm_provider, model, no_fuzz,
 @click.argument("gerrit_url")
 @click.option("-o", "--output", type=click.Path(), default="analysis.json",
               help="Output file for analysis results.")
-@click.option("--metis-cmd", default=None,
-              help="Path to Metis CLI binary (default: $METIS_CMD or 'metis').")
 @click.option("--gerrit-user", default=None,
               help="Gerrit username (default: $GERRIT_USERNAME).")
 @click.option("--gerrit-pass", default=None,
               help="Gerrit HTTP password (default: $GERRIT_PASSWORD).")
 @click.option("--no-verify-ssl", is_flag=True)
 @click.option("-v", "--verbose", is_flag=True)
-def analyze(gerrit_url, output, metis_cmd, gerrit_user, gerrit_pass,
+def analyze(gerrit_url, output, gerrit_user, gerrit_pass,
             no_verify_ssl, verbose):
     """Fetch and analyze a Gerrit change (without generating harnesses)."""
     import json
     _setup_logging(verbose)
 
     auth = _get_gerrit_auth(gerrit_user, gerrit_pass)
-    metis_cmd = _get_metis_cmd(metis_cmd)
     change = fetch_gerrit_diff(gerrit_url, auth=auth,
                                verify_ssl=not no_verify_ssl)
-    analyzer = MetisAnalyzer(metis_cmd=metis_cmd)
+    analyzer = MetisAnalyzer()
     result = analyzer.analyze_diff(change)
 
     data = {
@@ -272,25 +253,22 @@ def analyze(gerrit_url, output, metis_cmd, gerrit_user, gerrit_pass,
 @click.argument("gerrit_url")
 @click.option("-o", "--output-dir", type=click.Path(), required=True,
               help="Directory for generated harness files.")
-@click.option("--metis-cmd", default=None,
-              help="Path to Metis CLI binary (default: $METIS_CMD or 'metis').")
 @click.option("--gerrit-user", default=None,
               help="Gerrit username (default: $GERRIT_USERNAME).")
 @click.option("--gerrit-pass", default=None,
               help="Gerrit HTTP password (default: $GERRIT_PASSWORD).")
 @click.option("--no-verify-ssl", is_flag=True)
 @click.option("-v", "--verbose", is_flag=True)
-def generate(gerrit_url, output_dir, metis_cmd, gerrit_user, gerrit_pass,
+def generate(gerrit_url, output_dir, gerrit_user, gerrit_pass,
              no_verify_ssl, verbose):
     """Generate harnesses and corpus without running the fuzzer."""
     _setup_logging(verbose)
 
     auth = _get_gerrit_auth(gerrit_user, gerrit_pass)
-    metis_cmd = _get_metis_cmd(metis_cmd)
     change = fetch_gerrit_diff(gerrit_url, auth=auth,
                                verify_ssl=not no_verify_ssl)
 
-    analyzer = MetisAnalyzer(metis_cmd=metis_cmd)
+    analyzer = MetisAnalyzer()
     analysis = analyzer.analyze_diff(change)
 
     out = Path(output_dir)
