@@ -55,19 +55,109 @@ pip install metis-ai
 
 ## Environment Variables
 
-| 변수명 | 설명 | 예시 |
-|---|---|---|
-| `GERRIT_USERNAME` | Gerrit HTTP 인증 사용자명 | `myuser` |
-| `GERRIT_PASSWORD` | Gerrit HTTP 인증 비밀번호 | `mypassword` |
-| `METIS_CMD` | ARM Metis CLI 바이너리 경로 | `/opt/metis/bin/metis` |
+### 환경변수 목록
 
-CLI 옵션(`--gerrit-user`, `--gerrit-pass`, `--metis-cmd`)이 환경변수보다 우선합니다.
+| 변수명 | 설명 | 필수 여부 | 기본값 |
+|---|---|---|---|
+| `GERRIT_USERNAME` | Gerrit HTTP 인증 사용자명 | Gerrit 인증 시 필수 | _(없음)_ |
+| `GERRIT_PASSWORD` | Gerrit HTTP 인증 비밀번호 | Gerrit 인증 시 필수 | _(없음)_ |
+| `METIS_CMD` | ARM Metis CLI 바이너리 경로 | 선택 | `metis` (PATH에서 탐색) |
+
+> **우선순위**: CLI 옵션 (`--gerrit-user`, `--gerrit-pass`, `--metis-cmd`) > 환경변수 > 기본값
+>
+> CLI 옵션을 지정하면 환경변수 값을 무시합니다. CLI 옵션이 없으면 환경변수를 자동으로 사용합니다.
+
+### 설정 방법
+
+#### 1. 셸에서 직접 설정 (현재 세션만 유효)
 
 ```bash
-# 환경변수 설정 예시
 export GERRIT_USERNAME="myuser"
 export GERRIT_PASSWORD="mypassword"
 export METIS_CMD="/opt/metis/bin/metis"
+```
+
+#### 2. 셸 프로필에 영구 등록 (~/.bashrc 또는 ~/.zshrc)
+
+```bash
+# ~/.bashrc 또는 ~/.zshrc 끝에 추가
+echo 'export GERRIT_USERNAME="myuser"' >> ~/.bashrc
+echo 'export GERRIT_PASSWORD="mypassword"' >> ~/.bashrc
+echo 'export METIS_CMD="/opt/metis/bin/metis"' >> ~/.bashrc
+
+# 변경사항 적용
+source ~/.bashrc
+```
+
+#### 3. .env 파일 사용 (프로젝트별 설정)
+
+프로젝트 루트에 `.env` 파일을 생성하고 실행 전에 로드합니다.
+
+```bash
+# .env 파일 생성
+cat > .env << 'EOF'
+GERRIT_USERNAME=myuser
+GERRIT_PASSWORD=mypassword
+METIS_CMD=/opt/metis/bin/metis
+EOF
+
+# 실행 전 로드
+source .env
+gerrit-fuzzer run https://gerrit.example.com/c/project/+/12345
+```
+
+> `.env` 파일에는 민감한 정보가 포함되므로, `.gitignore`에 반드시 추가하세요.
+
+#### 4. 인라인 실행 (일회성)
+
+```bash
+GERRIT_USERNAME=myuser GERRIT_PASSWORD=mypass \
+    gerrit-fuzzer run https://gerrit.example.com/c/project/+/12345
+```
+
+### Gerrit 인증 설정 상세
+
+Gerrit HTTP 비밀번호는 Gerrit 웹 UI에서 발급합니다:
+
+1. Gerrit 웹 UI 접속 → **Settings** → **HTTP Credentials**
+2. **Generate Password** 클릭
+3. 생성된 사용자명과 비밀번호를 환경변수에 설정
+
+```bash
+# Gerrit에서 발급받은 값 설정
+export GERRIT_USERNAME="your_gerrit_username"
+export GERRIT_PASSWORD="your_generated_http_password"
+```
+
+- `GERRIT_USERNAME`만 설정하고 `GERRIT_PASSWORD`를 누락하면 경고 메시지가 출력되며, 인증 없이 접속을 시도합니다.
+- 공개(anonymous) 접근이 가능한 Gerrit 서버라면 인증 환경변수를 설정하지 않아도 됩니다.
+
+### Metis 경로 설정 상세
+
+ARM Metis가 시스템 PATH에 없는 경우, 설치된 절대 경로를 지정합니다:
+
+```bash
+# pip으로 설치한 경우 (보통 PATH에 자동 등록)
+export METIS_CMD="metis"
+
+# 직접 빌드한 경우
+export METIS_CMD="/home/user/metis/build/bin/metis"
+
+# Docker로 실행하는 경우
+export METIS_CMD="docker run --rm -v $(pwd):/workspace metis"
+```
+
+- `METIS_CMD`를 설정하지 않으면 기본값 `metis`를 PATH에서 탐색합니다.
+- Metis가 설치되지 않은 경우에도 내장 휴리스틱 분석(정규식 기반 10개 C/C++ 취약점 패턴 탐지)으로 자동 폴백하여 동작합니다.
+
+### 설정 확인
+
+환경변수가 올바르게 설정되었는지 확인합니다:
+
+```bash
+echo "GERRIT_USERNAME: ${GERRIT_USERNAME:-<not set>}"
+echo "GERRIT_PASSWORD: ${GERRIT_PASSWORD:+****}"  # 보안을 위해 값 숨김
+echo "METIS_CMD: ${METIS_CMD:-metis (default)}"
 ```
 
 ## Usage
