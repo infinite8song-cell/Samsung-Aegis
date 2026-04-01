@@ -2,40 +2,38 @@
 #
 # setup_metis.sh - Install ARM Metis from GitHub source
 #
-# Metis requires Python >= 3.12, so this script handles:
-#   1. Checking / installing Python 3.12+
-#   2. Cloning the Metis repository
-#   3. Installing Metis into a virtual environment
-#   4. Verifying the installation
+# Requires Python >= 3.12 (same as the project).
+#
+#   1. Verify Python 3.12+ is available (install if missing)
+#   2. Clone the Metis repository
+#   3. Install Metis into the current Python environment
+#   4. Verify the installation
 #
 # Environment variables:
 #   METIS_INSTALL_DIR  - Where to clone Metis (default: ~/.local/share/metis)
-#   OPENAI_API_KEY     - Required for Metis to function (OpenAI LLM provider)
+#   OPENAI_API_KEY     - API key for vLLM endpoint
+#   OPENAI_API_BASE    - vLLM endpoint URL
 #
 
 set -euo pipefail
 
 METIS_REPO="https://github.com/arm/metis.git"
 METIS_INSTALL_DIR="${METIS_INSTALL_DIR:-${HOME}/.local/share/metis}"
-METIS_VENV="${METIS_INSTALL_DIR}/.venv"
-METIS_BIN_LINK="${HOME}/.local/bin/metis"
 
 log()  { echo "[setup_metis] $*"; }
 warn() { echo "[setup_metis] WARNING: $*" >&2; }
 err()  { echo "[setup_metis] ERROR: $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# 1. Check Python >= 3.12
+# 1. Check / install Python >= 3.12
 # ---------------------------------------------------------------------------
 check_python() {
     local py=""
 
-    # Try common Python 3.12+ binaries
     for candidate in python3.13 python3.12 python3; do
         if command -v "$candidate" &>/dev/null; then
-            local ver
+            local ver major minor
             ver=$("$candidate" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-            local major minor
             major=$(echo "$ver" | cut -d. -f1)
             minor=$(echo "$ver" | cut -d. -f2)
             if [ "$major" -ge 3 ] && [ "$minor" -ge 12 ]; then
@@ -100,73 +98,72 @@ clone_or_update_metis() {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Create venv and install
+# 3. Install into current Python environment
 # ---------------------------------------------------------------------------
 install_metis() {
     local py="$1"
 
-    log "Creating virtual environment with ${py}..."
-    "${py}" -m venv "${METIS_VENV}"
-
-    log "Installing Metis and dependencies..."
-    "${METIS_VENV}/bin/pip" install --upgrade pip setuptools wheel
-    "${METIS_VENV}/bin/pip" install -e "${METIS_INSTALL_DIR}"
-
-    # Create symlink in ~/.local/bin
-    mkdir -p "$(dirname "${METIS_BIN_LINK}")"
-    ln -sf "${METIS_VENV}/bin/metis" "${METIS_BIN_LINK}"
-    log "Symlinked: ${METIS_BIN_LINK} -> ${METIS_VENV}/bin/metis"
-}
-
-# ---------------------------------------------------------------------------
-# 4. Also install metis into the current project's Python environment
-# ---------------------------------------------------------------------------
-install_metis_to_project() {
+    # If inside a virtualenv, install directly into it
     if [ -n "${VIRTUAL_ENV:-}" ]; then
-        log "Installing Metis into active virtual environment: ${VIRTUAL_ENV}"
-        pip install -e "${METIS_INSTALL_DIR}" 2>/dev/null || \
-            warn "Could not install Metis into project venv (Python version mismatch?)"
+        log "Installing Metis into active virtualenv: ${VIRTUAL_ENV}"
+        pip install -e "${METIS_INSTALL_DIR}"
+    else
+        # Install into the system/user Python
+        log "Installing Metis with ${py} (pip install -e)..."
+        "${py}" -m pip install -e "${METIS_INSTALL_DIR}"
+    fi
+
+    # Ensure ~/.local/bin is reachable for the metis CLI entry point
+    local bin_dir
+    bin_dir=$("${py}" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null || echo "")
+    if [ -n "$bin_dir" ] && [ -f "${bin_dir}/metis" ]; then
+        log "Metis CLI installed at: ${bin_dir}/metis"
     fi
 }
 
 # ---------------------------------------------------------------------------
-# 5. Verify
+# 4. Verify
 # ---------------------------------------------------------------------------
 verify() {
     log "Verifying Metis installation..."
 
-    if "${METIS_VENV}/bin/metis" --version 2>/dev/null; then
-        log "Metis installation successful."
-    elif "${METIS_VENV}/bin/python" -c "from metis.engine import MetisEngine; print('OK')" 2>/dev/null; then
-        log "Metis Python API available."
+    if command -v metis &>/dev/null && metis --version 2>/dev/null; then
+        log "Metis CLI: OK"
+    elif python3 -c "from metis.engine import MetisEngine; print('MetisEngine OK')" 2>/dev/null; then
+        log "Metis Python API: OK"
     else
         warn "Metis installed but verification failed. Check dependencies."
     fi
 
-    # Check OPENAI_API_KEY
+    # Check vLLM environment variables
+    echo ""
+    local all_ok=true
     if [ -z "${OPENAI_API_KEY:-}" ]; then
-        warn ""
-        warn "OPENAI_API_KEY is NOT set."
-        warn "Metis requires an LLM API key to perform security analysis."
-        warn "Set it with: export OPENAI_API_KEY=\"your-key-here\""
-        warn ""
-        warn "Supported providers (configure in metis.yaml):"
-        warn "  - OpenAI:       export OPENAI_API_KEY=..."
-        warn "  - Azure OpenAI: export AZURE_OPENAI_API_KEY=..."
-        warn "  - vLLM:         export VLLM_API_KEY=..."
-        warn "  - Ollama:       (no key needed, local)"
+        warn "OPENAI_API_KEY is NOT set (required for vLLM endpoint)"
+        all_ok=false
     else
-        log "OPENAI_API_KEY is set."
+        log "OPENAI_API_KEY: set"
+    fi
+
+    if [ -z "${OPENAI_API_BASE:-}" ]; then
+        warn "OPENAI_API_BASE is NOT set (required for vLLM endpoint URL)"
+        all_ok=false
+    else
+        log "OPENAI_API_BASE: ${OPENAI_API_BASE}"
+    fi
+
+    if [ "$all_ok" = false ]; then
+        warn ""
+        warn "Set the following environment variables for Metis AI analysis:"
+        warn "  export OPENAI_API_KEY=\"your-api-key\""
+        warn "  export OPENAI_API_BASE=\"http://vllm-server:8000/v1\""
+        warn "  export METIS_MODEL=\"model-name\"   # optional"
     fi
 
     echo ""
     log "====================================="
-    log "Metis is installed at: ${METIS_INSTALL_DIR}"
-    log "Binary: ${METIS_BIN_LINK}"
-    log "Python API: ${METIS_VENV}/bin/python -c 'from metis.engine import MetisEngine'"
-    log ""
-    log "Make sure ~/.local/bin is in your PATH:"
-    log "  export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+    log "Metis source: ${METIS_INSTALL_DIR}"
+    log "Python API:   python3 -c 'from metis.engine import MetisEngine'"
     log "====================================="
 }
 
@@ -174,15 +171,14 @@ verify() {
 # Main
 # ---------------------------------------------------------------------------
 main() {
-    log "Setting up ARM Metis (AI security code review)"
+    log "Setting up ARM Metis (AI security code review) for Python 3.12"
 
     local py
     py=$(check_python)
-    log "Using Python: ${py} ($(${py} --version 2>&1))"
+    log "Using: ${py} ($(${py} --version 2>&1))"
 
     clone_or_update_metis
     install_metis "${py}"
-    install_metis_to_project
     verify
 }
 

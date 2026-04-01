@@ -35,8 +35,7 @@ Gerrit URL ──> Gerrit REST API ──> Diff 추출
 
 ## Requirements
 
-- Python >= 3.10 (프로젝트 자체)
-- Python >= 3.12 (ARM Metis 실행 시)
+- Python >= 3.12
 - clang/clang++ with LibFuzzer support (compiler-rt)
 - ARM Metis + LLM API Key (선택 - 없으면 휴리스틱 분석으로 폴백)
 
