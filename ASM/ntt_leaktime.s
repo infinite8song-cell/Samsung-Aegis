@@ -66,11 +66,15 @@ ntt_asm_smull PROC
         push    {r4-r11, r14}
         add     r1, #4                              ; &zeta[1]
 
-        ldr.w   r2, ntt_leaktime_qinv               ; -qinv_signed
-        ldr.w   r3, ntt_leaktime_q
+        ; qinv = 0xFC7FDFFF (= -q^{-1} signed mod 2^32)
+        movw    r2, #0xDFFF
+        movt    r2, #0xFC7F
+        ; q = 8380417 = 0x007FE001
+        movw    r3, #0xE001
+        movt    r3, #0x007F
 
         ; --- stage 1 and 2 ---
-        ldr.w   r4, ntt_leaktime_64                 ; cntr = 64
+        movw    r4, #64                             ; cntr = 64
 
         ldr     r12, [r1, #4]                       ; z2
         ldr     r14, [r1, #8]                       ; z3
@@ -279,11 +283,15 @@ ntt_smull_L7
         EXPORT  inv_ntt_asm_smull
 inv_ntt_asm_smull PROC
         push    {r4-r11, r14}
-        ldr.w   r2, ntt_leaktime_qinv               ; -qinv_signed
-        ldr.w   r3, ntt_leaktime_q
+        ; qinv = 0xFC7FDFFF (= -q^{-1} signed mod 2^32)
+        movw    r2, #0xDFFF
+        movt    r2, #0xFC7F
+        ; q = 8380417 = 0x007FE001
+        movw    r3, #0xE001
+        movt    r3, #0x007F
 
         ; --- stage 1 and 2 ---
-        ldr.w   r4, ntt_leaktime_64                 ; cntr = 64
+        movw    r4, #64                             ; cntr = 64
 invntt_smull_L1
         ldr.w   r12, [r1, #4]                       ; z1..z127
         ldr.w   r14, [r1, #8]                       ; z128..z191
@@ -462,7 +470,7 @@ invntt_smull_L6
         ldr.w   r11, [r1]
         ldr.w   r12, [r1, #4]
         ldr.w   r14, [r1, #8]
-        ldr.w   r1, ntt_leaktime_f                  ; r1 now holds f
+        movw    r1, #41978                          ; f = 0xA3FA, fits in MOVW
 invntt_smull_L7
         ldr.w   r5, [r0]
         ldr.w   r6, [r0, #256]                      ; 64*4
@@ -488,18 +496,5 @@ invntt_smull_L7
 
         pop     {r4-r11, pc}
         ENDP
-
-; =============================================================================
-; Literal pool (read-only constants used by both functions)
-; =============================================================================
-        ALIGN   4
-ntt_leaktime_f
-        DCD     41978
-ntt_leaktime_qinv
-        DCD     0xFC7FDFFF
-ntt_leaktime_q
-        DCD     8380417
-ntt_leaktime_64
-        DCD     64
 
         END

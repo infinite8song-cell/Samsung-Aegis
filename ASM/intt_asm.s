@@ -122,7 +122,16 @@
 inv_ntt_asm_schoolbook PROC
         push    {r4-r11, r14}
 
-        ldr     r2, inv_ntt_asm_neg_qinv_signed     ; qinv (= -q^{-1} signed)
+        ; qinv = 0xFC7FDFFF (= -q^{-1} signed, mod 2^32)
+        ; NOTE: originally `ldr r2, inv_ntt_asm_neg_qinv_signed`.  armasm
+        ; v5.06 rejected the PC-relative LDR(literal) form with A1875E
+        ; because the data-table label at the end of this 2 KB function
+        ; sits outside the Thumb-2 LDR(literal) encoding range
+        ; (T1: 0..1020 B, T2: ±4095 B).  Replaced with a direct
+        ; MOVW+MOVT pair, which is encoding-range-free and uses the
+        ; same 8 bytes of code as LDR + 4-byte pool entry.
+        movw    r2, #0xDFFF
+        movt    r2, #0xFC7F
         movw    r3, #0xE001                         ; ql
         movw    r7, #0x7F                           ; qh
 
@@ -316,9 +325,5 @@ inv_sch_level_7
 
         pop     {r4-r11, pc}
         ENDP
-
-        ALIGN   4
-inv_ntt_asm_neg_qinv_signed
-        DCD     0xFC7FDFFF
 
         END

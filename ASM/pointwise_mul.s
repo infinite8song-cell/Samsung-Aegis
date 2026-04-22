@@ -71,7 +71,9 @@ poly_pointwise_invmontgomery_asm_mul PROC
         movw    r4, #0xE001                 ; ql
         movw    r5, #0x7F                   ; qh
         movw    r12, #256                   ; ctr
-        ldr     r3, pp_mul_qinv             ; qinv
+        ; qinv = 0xFC7FDFFF = 4236238847
+        movw    r3, #0xDFFF
+        movt    r3, #0xFC7F
 
 pp_mul_L1
         ldrsh.w r7, [r1, #2]                ; pah
@@ -101,7 +103,9 @@ poly_pointwise_acc_invmontgomery_asm_mul PROC
         movw    r4, #0xE001                 ; ql
         movw    r5, #0x7F                   ; qh
         movw    r12, #256                   ; ctr
-        ldr     r3, pp_mul_qinv             ; qinv
+        ; qinv = 0xFC7FDFFF = 4236238847
+        movw    r3, #0xDFFF
+        movt    r3, #0xFC7F
 
 pp_mul_acc_L1
         ldrsh.w r7, [r1, #2]                ; pah
@@ -119,9 +123,5 @@ pp_mul_acc_L1
         bne.w   pp_mul_acc_L1
         pop.w   {r4-r10, pc}
         ENDP
-
-        ALIGN   4
-pp_mul_qinv
-        DCD     0xFC7FDFFF                  ; -qinv mod 2^32 (= 4236238847)
 
         END
