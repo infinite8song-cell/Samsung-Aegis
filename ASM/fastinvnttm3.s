@@ -28,14 +28,13 @@
 ; Source upstream: https://github.com/mupq/pqm3  (public-domain / CC0)
 ; -----------------------------------------------------------------------------
 
-        PRESERVE8
+        AREA    |.text|, CODE, READONLY
         THUMB
+        PRESERVE8
 
 ; Global assembler variable used by the WHILE/WEND unroll that replaces the
 ; original `.rept 4` + `.set k` construct in LAYER 2+3+4.
         GBLA    k
-
-        AREA    |.text|, CODE, READONLY
 
 ; -----------------------------------------------------------------------------
 ; Macro: montgomerym3
@@ -79,14 +78,9 @@
 ; -----------------------------------------------------------------------------
         MACRO
         signed_barrettm3 $a, $q, $tmp, $barrettconst
-        ; Reload Barrett constant (original comment: -40318, encoded as the
-        ; 16-bit value 25218 followed by SXTH).
         movw    $barrettconst, #25218
         sxth    $barrettconst, $barrettconst
         mul.w   $tmp, $a, $barrettconst
-        ; Add 2^26 by rebuilding the constant in $barrettconst.  $barrettconst
-        ; is dead after the MUL above; we will reload it on the next macro
-        ; invocation.
         movw    $barrettconst, #0x0000
         movt    $barrettconst, #0x0400
         add.w   $tmp, $tmp, $barrettconst
@@ -98,8 +92,9 @@
 ; invntt_fast_m3(int16_t *poly, const int16_t *twiddles)
 ;   r0 = poly, r1 = twiddle_ptr
 ; =============================================================================
-        ALIGN   4
         EXPORT  invntt_fast_m3
+
+        ALIGN   4
 invntt_fast_m3 PROC
         push.w  {r4-r11, r14}
 
@@ -128,8 +123,6 @@ invntt_L1
         gsbutterflym3 r6, r8, r10, r12, r11, r14
         gsbutterflym3 r7, r9, r10, r12, r11, r14
 
-        ; signed Barrett reduction of the four layer-1-mixed coefficients.
-        ; The seed/rebuild of $barrettconst is encapsulated in the macro.
         signed_barrettm3 r2, r11, r12, r10
         signed_barrettm3 r3, r11, r12, r10
         signed_barrettm3 r6, r11, r12, r10
@@ -189,8 +182,6 @@ k       SETA    1
         gsbutterflym3 r4, r8, r10, r12, r11, r14
         gsbutterflym3 r5, r9, r10, r12, r11, r14
 
-        ; Montgomery pre-multiply by 2285 on the first four outputs
-        ; (original preserved the commented-out signed_barrettm3 alternative).
         movw    r10, #2285
         fqmulprecompm3 r2, r10, r12, r11, r14
         fqmulprecompm3 r3, r10, r12, r11, r14

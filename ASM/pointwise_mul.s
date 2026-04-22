@@ -10,10 +10,9 @@
 ; Source upstream: https://github.com/mupq/pqm3
 ; -----------------------------------------------------------------------------
 
-        PRESERVE8
-        THUMB
-
         AREA    |.text|, CODE, READONLY
+        THUMB
+        PRESERVE8
 
 ; -----------------------------------------------------------------------------
 ; Schoolbook 32x32 multiply with accumulation using MUL/MLA only.

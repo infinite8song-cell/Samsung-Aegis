@@ -16,12 +16,11 @@
 ; Source upstream: https://github.com/mupq/pqm3
 ; -----------------------------------------------------------------------------
 
-        PRESERVE8
+        AREA    |.text|, CODE, READONLY
         THUMB
+        PRESERVE8
 
         GBLA    count
-
-        AREA    |.text|, CODE, READONLY
 
 ; -----------------------------------------------------------------------------
 ; Schoolbook 32x32 multiply-accumulate into {acc1:acc0}.

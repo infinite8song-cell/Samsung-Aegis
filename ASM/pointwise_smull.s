@@ -9,10 +9,9 @@
 ; Source upstream: https://github.com/mupq/pqm3
 ; -----------------------------------------------------------------------------
 
-        PRESERVE8
-        THUMB
-
         AREA    |.text|, CODE, READONLY
+        THUMB
+        PRESERVE8
 
 ; -----------------------------------------------------------------------------
 ; Montgomery multiplication via SMULL+SMLAL.

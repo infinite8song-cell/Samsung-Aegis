@@ -12,10 +12,9 @@
 ; Source upstream: https://github.com/mupq/pqm3
 ; -----------------------------------------------------------------------------
 
-        PRESERVE8
-        THUMB
-
         AREA    |.text|, CODE, READONLY
+        THUMB
+        PRESERVE8
 
 ; -----------------------------------------------------------------------------
 ; redq : one-step Barrett-style reduction of a signed 32-bit value.

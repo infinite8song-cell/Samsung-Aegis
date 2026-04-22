@@ -14,8 +14,9 @@
 ; Source upstream: https://github.com/mupq/pqm3  (public-domain / CC0)
 ; -----------------------------------------------------------------------------
 
-        PRESERVE8
+        AREA    |.text|, CODE, READONLY
         THUMB
+        PRESERVE8
 
 ; Global assembler variable used by the WHILE/WEND unroll that replaces the
 ; original `.rept 4` + `.set k` construct in LAYER 4+3+2.
@@ -23,17 +24,9 @@
 
 barrett_constant EQU 20159
 
-        AREA    |.text|, CODE, READONLY
-
 ; -----------------------------------------------------------------------------
 ; Macro: butterflym3
 ;   Cooley-Tukey butterfly with Montgomery-reduced twiddle.
-;   $a0 : poly[i]   (in/out)
-;   $a1 : poly[j]   (in/out)
-;   $twiddle : twiddle factor
-;   $q   : modulus q
-;   $qinv: q^{-1} mod 2^16
-;   $tmp : scratch
 ; -----------------------------------------------------------------------------
         MACRO
         butterflym3 $a0, $a1, $twiddle, $q, $qinv, $tmp
@@ -61,8 +54,9 @@ barrett_constant EQU 20159
 ; ntt_fast_m3(int16_t *poly, const int16_t *twiddles)
 ;   r0 = poly, r1 = twiddle_ptr
 ; =============================================================================
-        ALIGN   4
         EXPORT  ntt_fast_m3
+
+        ALIGN   4
 ntt_fast_m3 PROC
         push.w  {r4-r11, r14}
 

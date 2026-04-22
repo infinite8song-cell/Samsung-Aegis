@@ -9,10 +9,9 @@
 ; Source upstream: https://github.com/mupq/pqm3  (public-domain / CC0)
 ; -----------------------------------------------------------------------------
 
-        PRESERVE8
-        THUMB
-
         AREA    |.text|, CODE, READONLY
+        THUMB
+        PRESERVE8
 
 ; -----------------------------------------------------------------------------
 ; Macro: barrettm3
