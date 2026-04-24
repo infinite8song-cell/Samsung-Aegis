@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; fastinvnttm3.s
+; fastinvnttm3.s   [ASMCM — side-channel countermeasure variant]
 ;
 ; Port of pqm3 crypto_kem/kyber768/m3/fastinvnttm3.S (GNU `as`, Thumb-2 UAL) to
 ; ARM Compiler v5.06 `armasm` syntax, targeting an SC300 (Cortex-M3 / ARMv7-M)
@@ -11,6 +11,50 @@
 ;   r6  = poly4         r7  = poly5   r8 = poly6   r9 = poly7
 ;   r10 = twiddle / montconst / barrettconst
 ;   r11 = q             r12 = tmp     r14 = qinv
+;
+; ===========================================================================
+; COUNTERMEASURE — First-order arithmetic masked Kyber inverse NTT
+; ===========================================================================
+;
+; Adds `invntt_fast_masked_m3` alongside the original `invntt_fast_m3`,
+; giving first-order side-channel protection for any secret polynomial
+; fed into the inverse NTT.  Together with `ntt_fast_masked_m3` in
+; ASMCM/fastnttm3.s this closes the NTT surface for Kyber-768 masked
+; operation.
+;
+; Technique — identical to the masked forward NTT.  The inverse NTT is
+; also Z_q-linear (q = 3329), so
+;
+;       inv_ntt(p)  =  inv_ntt(s0) + inv_ntt(s1)   (mod q)
+;
+; and dispatching the unmasked `invntt_fast_m3` on each arithmetic share
+; keeps the secret split throughout.
+;
+; Critical: r1 (twiddle_ptr) must be restored between calls
+; ---------------------------------------------------------
+; `invntt_fast_m3` advances r1 aggressively: inside LAYER 1 it uses
+; post-indexed LDRs (`ldrsh.w r10, [r1], #2`), and at stage boundaries
+; it does `add r1, #14`.  After the first BL returns, r1 is far from
+; the table start.  The wrapper caches the original r2 (twiddles ptr)
+; in callee-saved r5 and restores it before the second BL, so share 1
+; sees the identical twiddle sequence.
+;
+; Limitations (to be tightened in follow-up commits)
+; --------------------------------------------------
+; 1. Shares processed sequentially — second-order attacker not defeated.
+; 2. No coefficient-order shuffling / operation randomisation.
+; 3. No refresh gadget between shares.
+;
+; External API
+; ------------
+;   void invntt_fast_masked_m3(
+;            int16_t        s0[256],         ; r0 — share 0 (NTT domain, in/out)
+;            int16_t        s1[256],         ; r1 — share 1 (NTT domain, in/out)
+;            const int16_t  twiddles[ ... ]);; r2 — twiddle factor table
+;
+; On return, s0[] and s1[] hold the two arithmetic shares of the
+; standard-domain polynomial; their sum mod q equals inv_ntt(s0 + s1).
+; ===========================================================================
 ;
 ; NOTE on signed_barrettm3:
 ; The GNU source adds the literal `#67108864` (= 0x04000000 = 2^26) inside the
@@ -266,6 +310,41 @@ invntt_L3
         bne.w   invntt_L3
 
         pop.w   {r4-r11, pc}
+        ENDP
+
+; =============================================================================
+; COUNTERMEASURE wrapper — first-order arithmetic masked Kyber inverse NTT
+;
+; void invntt_fast_masked_m3(int16_t        s0[256],              ; r0
+;                            int16_t        s1[256],              ; r1
+;                            const int16_t  twiddles[ ... ]);     ; r2
+;
+; inv_ntt linearity over Z_q: inv_ntt(s0 + s1) == inv_ntt(s0) +
+; inv_ntt(s1) (mod q).  Dispatch the unmasked invntt_fast_m3 on each
+; share with a fresh twiddles pointer restored between calls.
+; =============================================================================
+        EXPORT  invntt_fast_masked_m3
+
+        ALIGN   4
+invntt_fast_masked_m3 PROC
+        push.w  {r4-r5, lr}
+
+        mov     r4, r1                              ; r4 <- share1 ptr
+        mov     r5, r2                              ; r5 <- twiddles ptr (canonical)
+
+        ; --- inverse NTT on share 0 -----------------------------------------
+        mov     r1, r5                              ; r1 <- twiddles
+        bl      invntt_fast_m3
+
+        ; --- inverse NTT on share 1 -----------------------------------------
+        ; Restore the unmoved twiddles pointer; post-indexed LDRs and
+        ; stage-boundary `add r1, #14` inside the first BL have left r1
+        ; well past the table start.
+        mov     r0, r4                              ; r0 <- share1
+        mov     r1, r5                              ; r1 <- twiddles (fresh copy)
+        bl      invntt_fast_m3
+
+        pop.w   {r4-r5, pc}
         ENDP
 
         END

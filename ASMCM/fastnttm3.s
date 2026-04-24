@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; fastnttm3.s
+; fastnttm3.s   [ASMCM — side-channel countermeasure variant]
 ;
 ; Port of pqm3 crypto_kem/kyber768/m3/fastnttm3.S (GNU `as`, Thumb-2 UAL) to
 ; ARM Compiler v5.06 `armasm` syntax, targeting an SC300 (Cortex-M3 / ARMv7-M)
@@ -10,6 +10,66 @@
 ;   r2  = poly0         r3  = poly1   r4 = poly2   r5 = poly3
 ;   r6  = poly4         r7  = poly5   r8 = poly6   r9 = poly7
 ;   r10 = twiddle / barrettconst      r11 = qinv    r12 = q    r14 = tmp
+;
+; ===========================================================================
+; COUNTERMEASURE — First-order arithmetic masked Kyber forward NTT
+; ===========================================================================
+;
+; Adds `ntt_fast_masked_m3` alongside the original `ntt_fast_m3`, giving
+; first-order side-channel protection for any secret polynomial fed
+; into the forward NTT (e.g. the ephemeral secret `s` or the noise
+; polynomial in Kyber encapsulation / decapsulation).
+;
+; Threat model
+; ------------
+; DPA / CPA / EM leakage on the unmasked NTT of a secret 16-bit
+; polynomial can be correlated with key-bit hypotheses to recover the
+; secret.  Arithmetic masking over Z_q (q = 3329) raises the attack
+; from first to second order.
+;
+; Technique
+; ---------
+; Split each secret coefficient p[i] in Z_q into two arithmetic shares:
+;
+;       p[i]  =  s0[i] + s1[i]   (mod q)      s1[i] uniformly random
+;
+; Because NTT is Z_q-linear,
+;
+;       NTT(p)  =  NTT(s0) + NTT(s1)   (mod q)
+;
+; so the masked NTT runs the unmasked `ntt_fast_m3` independently on
+; each share and keeps the two output shares separate.  Any single
+; leakage trace reveals operations on at most one share; that share is
+; uniformly distributed and statistically independent of the secret.
+;
+; Critical: r1 (twiddle_ptr) must be restored between calls
+; ---------------------------------------------------------
+; `ntt_fast_m3` advances r1 during execution — both inside inner loops
+; (via indexed LDRs against offsets up to #12) and at the LAYER 7+6+5
+; / 4+3+2 stage boundaries (`add r1, #14`).  After the first invocation
+; returns, r1 points well past the start of the twiddle table.  The
+; wrapper caches the original r2 (twiddles ptr) in callee-saved r5 and
+; restores it before the second BL; otherwise share 1 would consume a
+; shifted twiddle sequence and (NTT(s0) + NTT(s1)) mod q would not
+; equal NTT(p).
+;
+; Limitations (to be tightened in follow-up commits)
+; --------------------------------------------------
+; 1. Shares processed sequentially — second-order attacker combining
+;    leakage across the two BL windows is not defeated here.
+; 2. No coefficient-order shuffling / operation randomisation.
+; 3. No refresh gadget between shares.
+;
+; External API
+; ------------
+;   void ntt_fast_masked_m3(
+;            int16_t        s0[256],         ; r0 — share 0 (standard domain, in/out)
+;            int16_t        s1[256],         ; r1 — share 1 (standard domain, in/out)
+;            const int16_t  twiddles[ ... ]);; r2 — twiddle factor table
+;
+; On return, s0[] and s1[] hold the two arithmetic shares of the
+; NTT-domain polynomial; their sum mod q equals NTT(s0 + s1).
+; ===========================================================================
 ;
 ; Source upstream: https://github.com/mupq/pqm3  (public-domain / CC0)
 ; -----------------------------------------------------------------------------
@@ -220,6 +280,45 @@ ntt_L4
         bne.w   ntt_L4
 
         pop.w   {r4-r11, pc}
+        ENDP
+
+; =============================================================================
+; COUNTERMEASURE wrapper — first-order arithmetic masked Kyber forward NTT
+;
+; void ntt_fast_masked_m3(int16_t        s0[256],               ; r0
+;                         int16_t        s1[256],               ; r1
+;                         const int16_t  twiddles[ ... ]);      ; r2
+;
+; NTT linearity over Z_q: NTT(s0 + s1) == NTT(s0) + NTT(s1) (mod q).
+; Dispatch the unmasked ntt_fast_m3 on each share with a fresh
+; twiddles pointer restored between calls.
+;
+; Stack usage: 3 words (r4, r5, lr).  r4/r5 are callee-saved across the
+; inner BL, so they safely hold share1 and twiddles across the first
+; ntt_fast_m3 invocation.
+; =============================================================================
+        EXPORT  ntt_fast_masked_m3
+
+        ALIGN   4
+ntt_fast_masked_m3 PROC
+        push.w  {r4-r5, lr}
+
+        mov     r4, r1                              ; r4 <- share1 ptr
+        mov     r5, r2                              ; r5 <- twiddles ptr (canonical)
+
+        ; --- forward NTT on share 0 -----------------------------------------
+        mov     r1, r5                              ; r1 <- twiddles
+        bl      ntt_fast_m3
+
+        ; --- forward NTT on share 1 -----------------------------------------
+        ; Restore the unmoved twiddles pointer; the first BL both
+        ; post-advanced r1 inside the inner loops and performed
+        ; `add r1, #14` at stage boundaries.
+        mov     r0, r4                              ; r0 <- share1
+        mov     r1, r5                              ; r1 <- twiddles (fresh copy)
+        bl      ntt_fast_m3
+
+        pop.w   {r4-r5, pc}
         ENDP
 
         END
