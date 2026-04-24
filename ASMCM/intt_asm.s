@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; intt_asm.s
+; intt_asm.s   [ASMCM — side-channel countermeasure variant]
 ;
 ; Port of pqm3 crypto_sign/dilithium2/m3/intt_asm.S (GNU `as`, Thumb-2
 ; UAL) to ARM Compiler v5.06 `armasm` syntax, targeting an SC300
@@ -12,6 +12,81 @@
 ;   r2  = qinv      r3  = ql        r4  = cntr     r5  = pol0
 ;   r6  = pol1      r7  = qh        r8  = temp_1   r9  = temp_2
 ;   r10 = temp_3    r11 = zeta_l    r12 = zeta_h   r14 = temp_q
+;
+; ===========================================================================
+; COUNTERMEASURE — First-order arithmetic masked inverse NTT
+; ===========================================================================
+;
+; This file adds `inv_ntt_masked_asm_schoolbook` alongside the original
+; `inv_ntt_asm_schoolbook`, providing first-order side-channel protection
+; for the secret polynomial processed by the inverse NTT.
+;
+; Threat model
+; ------------
+; Differential / Correlation Power Analysis (DPA / CPA) and EM emanation
+; on the Dilithium signing inverse NTT can expose intermediates that
+; leak the secret key.  The classical masking countermeasure splits each
+; secret coefficient into two arithmetic shares:
+;
+;       p[i]  =  s0[i] + s1[i]   (mod q)     with s1[i] uniformly random
+;
+; An attacker observing a single leakage trace sees operations on only
+; one share; they must combine leakage from BOTH shares to recover p[i].
+; The correlation between measurements and the secret drops from first
+; order (linear in the number of traces needed) to second order
+; (quadratic), raising the attack cost by several orders of magnitude.
+;
+; Why NTT is compatible with arithmetic masking
+; ---------------------------------------------
+; The NTT (and its inverse) is a Z_q-linear map.  For any linear T:
+;
+;       T(s0 + s1)  =  T(s0) + T(s1)   (mod q)
+;
+; So masked inverse NTT can be computed by running the *unmasked* inverse
+; NTT on each share independently:
+;
+;       inv_ntt(p)  =  inv_ntt(s0) + inv_ntt(s1)   (mod q)
+;
+; The caller holds the two output shares in s0[] and s1[]; summing them
+; mod q reconstructs the standard-domain polynomial when needed.  The
+; shares remain split for downstream masked operations (rounding,
+; rejection sampling, packing) until the final step where the value is
+; demasked into a public output (e.g. signature component z).
+;
+; Implementation strategy
+; -----------------------
+; We reuse the existing tested `inv_ntt_asm_schoolbook` and invoke it
+; twice — once per share — with a fresh `zetas` pointer each time
+; (the inner routine advances r1 during execution, so the second call
+; must receive an unmoved copy).  Both shares traverse identical code
+; and memory-access patterns, so the *only* quantity that differs
+; between the two invocations is the share data itself — precisely the
+; condition required for first-order arithmetic masking security.
+;
+; Limitations (documented for future hardening)
+; ---------------------------------------------
+; 1. Shares are processed sequentially on the same core.  A higher-order
+;    attacker combining leakage across the two calls can still mount a
+;    second-order attack.  Mitigating that requires share-interleaved
+;    butterflies (stage-level share interleaving) or a refresh gadget
+;    between shares — planned for a follow-up commit.
+; 2. No operation shuffling / randomized coefficient order; an attacker
+;    with precise timing can align traces.
+; 3. Micro-architectural leakage (instruction cache warm-up, register-
+;    rename port pressure) between the two calls is not addressed.  On
+;    Cortex-M3 / SC300 this surface is much smaller than on out-of-order
+;    cores, but it is non-zero.
+;
+; External API
+; ------------
+;   void inv_ntt_masked_asm_schoolbook(
+;            int32_t        s0[N],           ; r0 - share 0 (in NTT domain, in/out)
+;            int32_t        s1[N],           ; r1 - share 1 (in NTT domain, in/out)
+;            const uint32_t zetas_inv_asm[N]); r2 - twiddle factor table
+;
+; On return, s0[] and s1[] hold the two arithmetic shares of the standard
+; (non-NTT-domain) polynomial; their sum (mod q) equals inv_ntt(s0+s1).
+; ===========================================================================
 ;
 ; Source upstream: https://github.com/mupq/pqm3
 ; -----------------------------------------------------------------------------
@@ -324,6 +399,53 @@ inv_sch_level_7
         bne.n   inv_sch_level_7
 
         pop     {r4-r11, pc}
+        ENDP
+
+; =============================================================================
+; COUNTERMEASURE wrapper — first-order arithmetic masked inverse NTT
+;
+; void inv_ntt_masked_asm_schoolbook(
+;          int32_t        s0[N],           ; r0 — share 0
+;          int32_t        s1[N],           ; r1 — share 1
+;          const uint32_t zetas_inv_asm[N]); r2 — twiddle table
+;
+; Exploits NTT linearity over Z_q: inv_ntt(s0 + s1) == inv_ntt(s0) +
+; inv_ntt(s1) (mod q).  Dispatches the unmasked schoolbook inverse NTT
+; on each share in turn, passing a *fresh* zetas pointer to the second
+; call (the inner routine post-increments r1 as it consumes twiddle
+; factors).  First-order side-channel security against DPA / CPA / EM
+; on the secret polynomial: a single leakage trace reveals at most one
+; share, which on its own is uniformly distributed and independent of
+; the secret.
+;
+; Stack usage: 3 words (r4, r5, lr).  r4/r5 are callee-saved across the
+; inner BL, so they can safely hold share1 and zetas across the first
+; inv_ntt_asm_schoolbook invocation.
+; =============================================================================
+        EXPORT  inv_ntt_masked_asm_schoolbook
+
+        ALIGN   4
+inv_ntt_masked_asm_schoolbook PROC
+        push.w  {r4-r5, lr}
+
+        mov     r4, r1                              ; r4 <- share1 ptr
+        mov     r5, r2                              ; r5 <- zetas ptr (canonical)
+
+        ; --- inverse NTT on share 0 -----------------------------------------
+        ; r0 already = s0 (arg1).  r1 must hold the zetas ptr per the inner
+        ; routine's AAPCS signature.
+        mov     r1, r5                              ; r1 <- zetas
+        bl      inv_ntt_asm_schoolbook
+
+        ; --- inverse NTT on share 1 -----------------------------------------
+        ; Pass the *unmoved* zetas pointer so share 1 sees the same twiddle
+        ; sequence as share 0.  Failing to restore r1 here would silently
+        ; corrupt the second half of the computation.
+        mov     r0, r4                              ; r0 <- share1
+        mov     r1, r5                              ; r1 <- zetas (fresh copy)
+        bl      inv_ntt_asm_schoolbook
+
+        pop.w   {r4-r5, pc}
         ENDP
 
         END

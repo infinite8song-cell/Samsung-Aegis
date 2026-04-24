@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ntt_leaktime.s
+; ntt_leaktime.s   [ASMCM — side-channel countermeasure variant]
 ;
 ; Port of pqm3 crypto_sign/dilithium2/m3/ntt_leaktime.S (GNU `as`,
 ; Thumb-2 UAL) to ARM Compiler v5.06 `armasm` syntax, targeting an SC300
@@ -17,6 +17,73 @@
 ;   r5  = pol0      r6  = pol1     r7  = pol2    r8  = pol3
 ;   r9  = temp_h    r10 = temp_l
 ;   r11 = zeta0     r12 = zeta1    r14 = zeta2
+;
+; ===========================================================================
+; COUNTERMEASURE — First-order arithmetic masked forward & inverse NTT
+; ===========================================================================
+;
+; This file adds two masked wrappers alongside the original functions:
+;
+;   ntt_masked_asm_smull      (wraps ntt_asm_smull)
+;   inv_ntt_masked_asm_smull  (wraps inv_ntt_asm_smull)
+;
+; The underlying algorithms are unchanged; only linearity of the NTT
+; over Z_q is exploited to run the existing routines twice — once per
+; arithmetic share — with a fresh zetas pointer each time.
+;
+; Masking technique recap
+; -----------------------
+; Each secret polynomial coefficient p[i] is split into two shares:
+;
+;       p[i]  =  s0[i] + s1[i]   (mod q)      s1[i] uniformly random
+;
+; Because NTT and inv_ntt are Z_q-linear,
+;
+;       NTT(p)     =  NTT(s0)     + NTT(s1)       (mod q)
+;       inv_ntt(p) =  inv_ntt(s0) + inv_ntt(s1)   (mod q)
+;
+; so processing each share independently and keeping the two outputs
+; split gives a first-order secure masked NTT / inverse NTT.  A single
+; leakage trace exposes only one share; the share alone is uniformly
+; distributed and independent of the secret, so no first-order DPA /
+; CPA correlation with the key exists.
+;
+; Zetas-pointer handling (critical)
+; ---------------------------------
+; Both ntt_asm_smull and inv_ntt_asm_smull consume the twiddle table
+; via post-indexed LDRs (see `ldr r11, [r1], #12` in each loop body),
+; and ntt_asm_smull additionally does `add r1, #4` in its prologue to
+; land on &zeta[1].  After either function returns, r1 is well past
+; the table start.  The masked wrapper MUST pass an *unmoved* zetas
+; pointer into the second invocation — reusing the post-incremented r1
+; would feed share 1 a shifted twiddle sequence and silently make
+; (NTT(s0) + NTT(s1)) mod q  !=  NTT(p).  The wrapper achieves this by
+; caching the original r2 (zetas) in callee-saved r5 across the first
+; BL and restoring it before the second.
+;
+; Documented limitations (to be addressed in follow-up commits)
+; -------------------------------------------------------------
+; 1. Shares processed sequentially — second-order attacker combining
+;    leakage across the two BL windows is not defeated.
+; 2. No coefficient-order shuffling / operation randomisation.
+; 3. No refresh gadget between shares.
+;
+; External API
+; ------------
+;   void ntt_masked_asm_smull(
+;            int32_t        s0[N],
+;            int32_t        s1[N],
+;            const uint32_t zetas_asm[N]);
+;
+;   void inv_ntt_masked_asm_smull(
+;            int32_t        s0[N],
+;            int32_t        s1[N],
+;            const uint32_t zetas_inv_asm[N]);
+;
+; On return, s0[] and s1[] hold the two arithmetic shares of the
+; transformed polynomial; their sum mod q equals NTT / inv_ntt of the
+; original s0 + s1.
+; ===========================================================================
 ;
 ; Source upstream: https://github.com/mupq/pqm3
 ; -----------------------------------------------------------------------------
@@ -495,6 +562,81 @@ invntt_smull_L7
         bne     invntt_smull_L7
 
         pop     {r4-r11, pc}
+        ENDP
+
+; =============================================================================
+; COUNTERMEASURE wrapper — first-order arithmetic masked forward NTT
+;
+; void ntt_masked_asm_smull(int32_t        s0[N],           ; r0
+;                           int32_t        s1[N],           ; r1
+;                           const uint32_t zetas_asm[N]);   ; r2
+;
+; NTT linearity over Z_q: NTT(s0 + s1) == NTT(s0) + NTT(s1) (mod q).
+; Dispatch the unmasked ntt_asm_smull on each share, passing a *fresh*
+; zetas pointer to the second call (the inner routine does
+; `add r1, #4` in its prologue and post-increments r1 as it walks the
+; twiddle table).
+;
+; Stack usage: 3 words (r4, r5, lr).  r4/r5 are callee-saved across the
+; inner BL, so they safely hold share1 and zetas across the first
+; ntt_asm_smull invocation.
+; =============================================================================
+        EXPORT  ntt_masked_asm_smull
+
+        ALIGN   4
+ntt_masked_asm_smull PROC
+        push.w  {r4-r5, lr}
+
+        mov     r4, r1                              ; r4 <- share1 ptr
+        mov     r5, r2                              ; r5 <- zetas ptr (canonical)
+
+        ; --- forward NTT on share 0 -----------------------------------------
+        mov     r1, r5                              ; r1 <- zetas
+        bl      ntt_asm_smull
+
+        ; --- forward NTT on share 1 -----------------------------------------
+        ; r1 was advanced well past the table start by the first BL;
+        ; restore from r5 before the second call.
+        mov     r0, r4                              ; r0 <- share1
+        mov     r1, r5                              ; r1 <- zetas (fresh copy)
+        bl      ntt_asm_smull
+
+        pop.w   {r4-r5, pc}
+        ENDP
+
+; =============================================================================
+; COUNTERMEASURE wrapper — first-order arithmetic masked inverse NTT
+;
+; void inv_ntt_masked_asm_smull(int32_t        s0[N],               ; r0
+;                               int32_t        s1[N],               ; r1
+;                               const uint32_t zetas_inv_asm[N]);   ; r2
+;
+; inv_ntt linearity over Z_q: inv_ntt(s0 + s1) == inv_ntt(s0) +
+; inv_ntt(s1) (mod q).  Dispatch inv_ntt_asm_smull on each share with
+; a restored zetas pointer between calls.  Note: inv_ntt_asm_smull
+; internally overwrites r1 with the final Montgomery constant f after
+; the stage-6 load_zeta, but that happens inside the routine and does
+; not affect caller's r5 copy.
+; =============================================================================
+        EXPORT  inv_ntt_masked_asm_smull
+
+        ALIGN   4
+inv_ntt_masked_asm_smull PROC
+        push.w  {r4-r5, lr}
+
+        mov     r4, r1                              ; r4 <- share1 ptr
+        mov     r5, r2                              ; r5 <- zetas ptr (canonical)
+
+        ; --- inverse NTT on share 0 -----------------------------------------
+        mov     r1, r5                              ; r1 <- zetas
+        bl      inv_ntt_asm_smull
+
+        ; --- inverse NTT on share 1 -----------------------------------------
+        mov     r0, r4                              ; r0 <- share1
+        mov     r1, r5                              ; r1 <- zetas (fresh copy)
+        bl      inv_ntt_asm_smull
+
+        pop.w   {r4-r5, pc}
         ENDP
 
         END

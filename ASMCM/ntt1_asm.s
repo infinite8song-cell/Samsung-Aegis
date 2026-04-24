@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; ntt1_asm.s
+; ntt1_asm.s   [ASMCM — side-channel countermeasure variant]
 ;
 ; Port of pqm3 crypto_sign/dilithium2/m3/ntt1_asm.S (GNU `as`, Thumb-2
 ; UAL) to ARM Compiler v5.06 `armasm` syntax, targeting an SC300
@@ -11,6 +11,64 @@
 ;   r4  = cntr      r5  = pol0       r6  = pol1_h   r7  = pol1_l
 ;   r8  = ql        r9  = temp_h     r10 = temp_l
 ;   r11 = zeta_h    r12 = zeta_l     r14 = temp
+;
+; ===========================================================================
+; COUNTERMEASURE — First-order arithmetic masked forward NTT
+; ===========================================================================
+;
+; This file adds `ntt_masked_asm_schoolbook` alongside the original
+; `ntt_asm_schoolbook`, providing first-order side-channel protection
+; for secret polynomials fed into the forward NTT (for example, y and
+; s1 during Dilithium signing when their NTT-domain forms are needed).
+;
+; Threat model
+; ------------
+; DPA / CPA / EM leakage during the unmasked forward NTT of a secret
+; polynomial can be correlated with key-bit hypotheses to recover the
+; secret.  Arithmetic masking in Z_q raises the attack from first- to
+; second-order.
+;
+; Technique — same as ASMCM/intt_asm.s masking, applied to the forward
+; map.  Split the input polynomial into two arithmetic shares:
+;
+;       p[i]  =  s0[i] + s1[i]   (mod q)      s1[i] uniformly random
+;
+; Because the NTT is a Z_q-linear map,
+;
+;       NTT(p)  =  NTT(s0) + NTT(s1)   (mod q)
+;
+; so the masked NTT is computed by running the unmasked
+; `ntt_asm_schoolbook` independently on each share.  Caller keeps both
+; output shares split throughout the downstream computation; they are
+; only summed (mod q) at a public boundary.
+;
+; Implementation strategy
+; -----------------------
+; Thin assembly wrapper invoking the existing tested ntt_asm_schoolbook
+; twice — once per share — with a fresh `zetas` pointer each time.  The
+; inner routine does `add r1, #4` in its prologue and then post-
+; increments r1 via `load_zeta`, so the second call MUST receive the
+; unmoved original zetas pointer; otherwise the second share processes
+; shifted twiddle factors and the sum-mod-q of the two outputs no
+; longer equals NTT(p).
+;
+; Limitations (to be tightened in follow-up commits)
+; --------------------------------------------------
+; 1. Shares processed sequentially — second-order attacker combining
+;    leakage across the two BL calls is not defeated here.
+; 2. No operation shuffling / randomised coefficient ordering.
+; 3. No refresh gadget between shares.
+;
+; External API
+; ------------
+;   void ntt_masked_asm_schoolbook(
+;            int32_t        s0[N],       ; r0 — share 0 (standard domain, in/out)
+;            int32_t        s1[N],       ; r1 — share 1 (standard domain, in/out)
+;            const uint32_t zetas_asm[N]); r2 — twiddle table
+;
+; On return, s0[] and s1[] hold the two arithmetic shares of the NTT-
+; domain polynomial; their sum mod q equals NTT(s0 + s1).
+; ===========================================================================
 ;
 ; Source upstream: https://github.com/mupq/pqm3
 ; -----------------------------------------------------------------------------
@@ -284,6 +342,49 @@ ntt_sch_level_0
         bne.n   ntt_sch_level_0
 
         pop     {r4-r11, pc}
+        ENDP
+
+; =============================================================================
+; COUNTERMEASURE wrapper — first-order arithmetic masked forward NTT
+;
+; void ntt_masked_asm_schoolbook(
+;          int32_t        s0[N],       ; r0 — share 0 (in/out)
+;          int32_t        s1[N],       ; r1 — share 1 (in/out)
+;          const uint32_t zetas_asm[N]); r2 — twiddle table
+;
+; NTT linearity over Z_q: NTT(s0 + s1) == NTT(s0) + NTT(s1) (mod q).
+; Dispatch the unmasked schoolbook forward NTT on each share in turn,
+; passing a *fresh* zetas pointer to the second call (the inner routine
+; does `add r1, #4` plus post-incremented load_zeta).
+;
+; Stack usage: 3 words (r4, r5, lr).  r4/r5 are callee-saved across the
+; inner BL, so they safely hold share1 and zetas across the first
+; ntt_asm_schoolbook invocation.
+; =============================================================================
+        EXPORT  ntt_masked_asm_schoolbook
+
+        ALIGN   4
+ntt_masked_asm_schoolbook PROC
+        push.w  {r4-r5, lr}
+
+        mov     r4, r1                              ; r4 <- share1 ptr
+        mov     r5, r2                              ; r5 <- zetas ptr (canonical)
+
+        ; --- forward NTT on share 0 -----------------------------------------
+        ; r0 already = s0 (arg1).  r1 must hold the zetas ptr per
+        ; ntt_asm_schoolbook's AAPCS signature.
+        mov     r1, r5                              ; r1 <- zetas
+        bl      ntt_asm_schoolbook
+
+        ; --- forward NTT on share 1 -----------------------------------------
+        ; Pass the *unmoved* zetas pointer so share 1 sees the same twiddle
+        ; sequence as share 0.  The inner routine's prologue `add r1, #4`
+        ; and subsequent load_zeta post-increments have trashed r1 by now.
+        mov     r0, r4                              ; r0 <- share1
+        mov     r1, r5                              ; r1 <- zetas (fresh copy)
+        bl      ntt_asm_schoolbook
+
+        pop.w   {r4-r5, pc}
         ENDP
 
         END
