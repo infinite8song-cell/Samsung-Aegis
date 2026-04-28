@@ -1,0 +1,290 @@
+# Makefile.armclang — impl_sc300 ML-DSA-65 QEMU test (armclang build)
+# Target   : QEMU mps2-an385 (Cortex-M3 / SC300)
+# Toolchain: ARM Compiler 6 (armclang 6.22 + armlink + fromelf)
+#
+# Targets:
+#   build   compile output/mldsa65_test_armclang.elf
+#   qemu    run it on QEMU mps2-an385
+#   clean   delete produced artefacts under output/
+
+ARMCLANG ?= armclang
+ARMLINK  ?= armlink
+FROMELF  ?= fromelf
+QEMU     ?= qemu-system-arm
+
+HERE    := $(abspath .)
+
+COMMON  := $(HERE)/vendor/pqm4-common
+MCOMMON := $(HERE)/vendor/mupq-common
+OUT     := $(HERE)/output
+
+# ------------------------------------------------------------------ #
+# Compiler flags (armclang)
+# ------------------------------------------------------------------ #
+CFLAGS := \
+    --target=arm-arm-none-eabi \
+    -mcpu=cortex-m3 \
+    -mthumb \
+    -O2 \
+    -std=gnu99 \
+    -Wall \
+    -Wextra \
+    -fno-common \
+    -DPQM4 \
+    -DMPS2_AN385 \
+    -DDATA_IN_FLASH \
+    -I$(HERE)/ref \
+    -I$(MCOMMON) \
+    -I$(HERE)/cmsis \
+    -I$(COMMON)/mps2 \
+    $(EXTRA_CFLAGS)
+
+# ------------------------------------------------------------------ #
+# Linker flags (armlink)
+# ------------------------------------------------------------------ #
+SCATTER := $(HERE)/mps2_an385.sct
+
+# startup_MPS2.S uses preprocessor-conditional symbols for armclang:
+# __StackTop is hardcoded (0x20400000); BSS bounds come from scatter
+# symbols Image$$ER_BSS$$Base / Image$$ER_BSS$$ZI$$Limit.
+LDFLAGS := \
+    --cpu=Cortex-M3 \
+    --scatter=$(SCATTER) \
+    --entry=Reset_Handler \
+    --diag_suppress=6306 \
+    --map \
+    --list $(OUT)/mldsa65_test_armclang.map
+
+# ------------------------------------------------------------------ #
+# Primary QEMU test target  (sc300 streaming sign + ARMv7-M NTT asm)
+# ------------------------------------------------------------------ #
+OBJ_DIR_S8_AC := $(OUT)/obj/test_armclang
+
+SRCS_C_S8 := \
+    $(HERE)/test/test_mldsa65_main.c \
+    $(HERE)/test/hal_m3.c \
+    $(HERE)/test/kat_data.c \
+    $(MCOMMON)/fips202.c \
+    $(COMMON)/randombytes.c \
+    $(HERE)/ref/packing.c \
+    $(HERE)/ref/poly.c \
+    $(HERE)/ref/polyvec.c \
+    $(HERE)/ref/reduce.c \
+    $(HERE)/ref/rounding.c \
+    $(HERE)/ref/symmetric-shake.c \
+    $(HERE)/sc300/sign.c \
+    $(HERE)/sc300/masked_random.c \
+    $(HERE)/sc300/masked_keccak_core.c \
+    $(HERE)/sc300/masked_rhoprime.c \
+    $(HERE)/sc300/masked_cs1.c \
+    $(HERE)/sc300/masked_cs2_ct0.c \
+    $(HERE)/sc300/masked_y_sample.c \
+    $(HERE)/sc300/masked_chknorm.c \
+    $(HERE)/sc300/masked_ba.c
+
+SRCS_S_S8 := \
+    $(COMMON)/keccakf1600.S \
+    $(COMMON)/mps2/startup_MPS2.S \
+    $(HERE)/sc300/ntt.S
+
+OBJS_C_S8 := $(addprefix $(OBJ_DIR_S8_AC)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_S8))))
+OBJS_S_S8 := $(addprefix $(OBJ_DIR_S8_AC)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_S8))))
+OBJS_S8   := $(OBJS_C_S8) $(OBJS_S_S8)
+
+.PHONY: all build build44 qemu qemu44 clean
+
+all: build build44
+
+build: $(OUT)/mldsa65_test_armclang.elf $(OUT)/mldsa65_test_armclang.bin
+	@echo ""
+	@echo "QEMU test build OK (armclang / Cortex-M3 / ML-DSA-65)"
+	@echo "Run: make -f Makefile.armclang qemu"
+
+# ------------------------------------------------------------------ #
+# Compile rules — C
+# ------------------------------------------------------------------ #
+$(OBJ_DIR_S8_AC):
+	mkdir -p $(OBJ_DIR_S8_AC)
+
+$(OBJ_DIR_S8_AC)/test_mldsa65_main.o: $(HERE)/test/test_mldsa65_main.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/hal_m3.o: $(HERE)/test/hal_m3.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/kat_data.o: $(HERE)/test/kat_data.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/fips202.o: $(MCOMMON)/fips202.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/randombytes.o: $(COMMON)/randombytes.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -I$(COMMON) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/packing.o: $(HERE)/ref/packing.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/poly.o: $(HERE)/ref/poly.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/polyvec.o: $(HERE)/ref/polyvec.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/reduce.o: $(HERE)/ref/reduce.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/rounding.o: $(HERE)/ref/rounding.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/symmetric-shake.o: $(HERE)/ref/symmetric-shake.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/sign.o: $(HERE)/sc300/sign.c | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $<  (sc300 streaming sign)"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+# Masked SCA kernels — compile as empty TUs unless -DMLDSA_MASK_* is set.
+define CC_MASKED_RULE_S8
+$(OBJ_DIR_S8_AC)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_S8_AC)
+	@echo "  CC   $$<"
+	$(ARMCLANG) $(CFLAGS) -c $$< -o $$@
+endef
+MASKED_SRCS_S8 := \
+    $(HERE)/sc300/masked_random.c \
+    $(HERE)/sc300/masked_keccak_core.c \
+    $(HERE)/sc300/masked_rhoprime.c \
+    $(HERE)/sc300/masked_cs1.c \
+    $(HERE)/sc300/masked_cs2_ct0.c \
+    $(HERE)/sc300/masked_y_sample.c \
+    $(HERE)/sc300/masked_chknorm.c \
+    $(HERE)/sc300/masked_ba.c
+$(foreach src,$(MASKED_SRCS_S8),$(eval $(call CC_MASKED_RULE_S8,$(src))))
+
+# ------------------------------------------------------------------ #
+# Compile rules — Assembly
+# ------------------------------------------------------------------ #
+$(OBJ_DIR_S8_AC)/keccakf1600.o: $(COMMON)/keccakf1600.S | $(OBJ_DIR_S8_AC)
+	@echo "  AS   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/startup_MPS2.o: $(COMMON)/mps2/startup_MPS2.S | $(OBJ_DIR_S8_AC)
+	@echo "  AS   $<"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_S8_AC)/ntt.o: $(HERE)/sc300/ntt.S | $(OBJ_DIR_S8_AC)
+	@echo "  AS   $<  (ARMv7-M NTT, no DSP)"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
+# ------------------------------------------------------------------ #
+# Link
+# ------------------------------------------------------------------ #
+$(OUT)/mldsa65_test_armclang.elf: $(OBJS_S8) $(SCATTER)
+	@echo "  LD   $@"
+	$(ARMLINK) $(LDFLAGS) $(OBJS_S8) -o $@
+
+$(OUT)/mldsa65_test_armclang.bin: $(OUT)/mldsa65_test_armclang.elf
+	@echo "  BIN  $@"
+	$(FROMELF) --bin --output=$@ $<
+
+# ------------------------------------------------------------------ #
+# ML-DSA-44 variant (separate obj dir, -DMLDSA_MODE=44 everywhere)
+# ------------------------------------------------------------------ #
+OBJ_DIR_44_AC := $(OUT)/obj/test44_armclang
+CFLAGS_44 := $(CFLAGS) -DMLDSA_MODE=44 -I$(HERE)/test
+
+SRCS_C_44 := \
+    $(HERE)/test/test_mldsa44_main.c \
+    $(HERE)/test/hal_m3.c \
+    $(HERE)/test/kat_data44.c \
+    $(MCOMMON)/fips202.c \
+    $(COMMON)/randombytes.c \
+    $(HERE)/ref/packing.c \
+    $(HERE)/ref/poly.c \
+    $(HERE)/ref/polyvec.c \
+    $(HERE)/ref/reduce.c \
+    $(HERE)/ref/rounding.c \
+    $(HERE)/ref/symmetric-shake.c \
+    $(HERE)/sc300/sign.c \
+    $(HERE)/sc300/masked_random.c \
+    $(HERE)/sc300/masked_keccak_core.c \
+    $(HERE)/sc300/masked_rhoprime.c \
+    $(HERE)/sc300/masked_cs1.c \
+    $(HERE)/sc300/masked_cs2_ct0.c \
+    $(HERE)/sc300/masked_y_sample.c \
+    $(HERE)/sc300/masked_chknorm.c \
+    $(HERE)/sc300/masked_ba.c
+
+SRCS_S_44 := \
+    $(COMMON)/keccakf1600.S \
+    $(COMMON)/mps2/startup_MPS2.S \
+    $(HERE)/sc300/ntt.S
+
+OBJS_C_44 := $(addprefix $(OBJ_DIR_44_AC)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_44))))
+OBJS_S_44 := $(addprefix $(OBJ_DIR_44_AC)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_44))))
+OBJS_44   := $(OBJS_C_44) $(OBJS_S_44)
+
+$(OBJ_DIR_44_AC):
+	mkdir -p $(OBJ_DIR_44_AC)
+
+build44: $(OUT)/mldsa44_test_armclang.elf $(OUT)/mldsa44_test_armclang.bin
+	@echo ""
+	@echo "QEMU test build OK (armclang / Cortex-M3 / ML-DSA-44)"
+	@echo "Run: make -f Makefile.armclang qemu44"
+
+# Compile rules — generic pattern via templates
+define CC44_RULE
+$(OBJ_DIR_44_AC)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_44_AC)
+	@echo "  CC44 $$<"
+	$(ARMCLANG) $(CFLAGS_44) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_C_44),$(eval $(call CC44_RULE,$(src))))
+
+define AS44_RULE
+$(OBJ_DIR_44_AC)/$(notdir $(patsubst %.S,%.o,$(1))): $(1) | $(OBJ_DIR_44_AC)
+	@echo "  AS44 $$<"
+	$(ARMCLANG) $(CFLAGS_44) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_S_44),$(eval $(call AS44_RULE,$(src))))
+
+$(OUT)/mldsa44_test_armclang.elf: $(OBJS_44) $(SCATTER)
+	@echo "  LD44 $@"
+	$(ARMLINK) --cpu=Cortex-M3 --scatter=$(SCATTER) --entry=Reset_Handler \
+	    --diag_suppress=6306 \
+	    --map --list $(OUT)/mldsa44_test_armclang.map $(OBJS_44) -o $@
+
+$(OUT)/mldsa44_test_armclang.bin: $(OUT)/mldsa44_test_armclang.elf
+	@echo "  BIN  $@"
+	$(FROMELF) --bin --output=$@ $<
+
+# ------------------------------------------------------------------ #
+# QEMU
+# ------------------------------------------------------------------ #
+qemu: $(OUT)/mldsa65_test_armclang.elf
+	@echo "Running ML-DSA-65 S8 (armclang) on QEMU mps2-an385..."
+	$(QEMU) -M mps2-an385 -nographic -semihosting \
+	        -kernel $(OUT)/mldsa65_test_armclang.elf
+
+qemu44: $(OUT)/mldsa44_test_armclang.elf
+	@echo "Running ML-DSA-44 (armclang) on QEMU mps2-an385..."
+	$(QEMU) -M mps2-an385 -nographic -semihosting \
+	        -kernel $(OUT)/mldsa44_test_armclang.elf
+
+# ------------------------------------------------------------------ #
+# Clean
+# ------------------------------------------------------------------ #
+clean:
+	rm -rf $(OBJ_DIR_S8_AC) $(OBJ_DIR_44_AC) \
+	       $(OUT)/mldsa65_test_armclang.elf $(OUT)/mldsa65_test_armclang.bin $(OUT)/mldsa65_test_armclang.map \
+	       $(OUT)/mldsa44_test_armclang.elf $(OUT)/mldsa44_test_armclang.bin $(OUT)/mldsa44_test_armclang.map
+	@echo "cleaned  ->  $(OUT)"

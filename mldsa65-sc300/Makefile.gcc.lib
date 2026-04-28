@@ -1,0 +1,197 @@
+# Makefile.gcc.lib —
+# Mirror of Makefile.armclang.lib but using arm-none-eabi-gcc / ar.
+# Intended purely for SOURCE VALIDATION when armclang is not available:
+# verifies the code compiles clean under all four configurations
+#   { LE, BE } x { short-enum, long-enum }
+# and that the resulting .o set archives into a static library.
+#
+# The shipped deliverable is Makefile.armclang.lib; use that with
+# armclang / armar for the final toolchain output.
+
+GNU_TC ?= /tmp/arm-gnu-toolchain-13.3.rel1-darwin-arm64-arm-none-eabi
+
+CC    := $(GNU_TC)/bin/arm-none-eabi-gcc
+AR    := $(GNU_TC)/bin/arm-none-eabi-ar
+
+HERE    := $(abspath .)
+
+COMMON  := $(HERE)/vendor/pqm4-common
+MCOMMON := $(HERE)/vendor/mupq-common
+
+BE    ?= 0
+ENUM  ?= long
+WCHAR ?= 32
+OPT   ?= -O2
+BUILD ?= release
+
+# Optimisation tag: empty for default -O2, '_O<n>' otherwise.
+ifeq ($(OPT),-O2)
+  OPT_TAG :=
+else
+  OPT_TAG := _$(patsubst -%,%,$(OPT))
+endif
+
+ifeq ($(BE),1)
+  ENDIAN_FLAG := -mbig-endian
+  ENDIAN_TAG  := be
+  USE_ASM_KECCAK := 0
+else
+  ENDIAN_FLAG :=
+  ENDIAN_TAG  := le
+  USE_ASM_KECCAK := 1
+endif
+
+ifeq ($(ENUM),short)
+  ENUM_FLAG := -fshort-enums
+  ENUM_TAG  := short
+else ifeq ($(ENUM),long)
+  ENUM_FLAG := -fno-short-enums
+  ENUM_TAG  := long
+else
+  $(error ENUM must be one of: short, long)
+endif
+
+ifeq ($(WCHAR),16)
+  WCHAR_FLAG := -fshort-wchar
+  WCHAR_TAG  := _w16
+else ifeq ($(WCHAR),32)
+  WCHAR_FLAG :=
+  WCHAR_TAG  :=
+else
+  $(error WCHAR must be one of: 16, 32)
+endif
+
+STRIP := $(GNU_TC)/bin/arm-none-eabi-strip
+
+ifeq ($(BUILD),debug)
+  DEBUG_FLAG := -g -DMLDSA_BUILD_DEBUG
+  BUILD_TAG  := _dbg
+  STRIP_CMD  := :
+else ifeq ($(BUILD),release)
+  DEBUG_FLAG :=
+  BUILD_TAG  :=
+  STRIP_CMD  = $(STRIP) --strip-debug --strip-unneeded
+else
+  $(error BUILD must be one of: release, debug)
+endif
+
+CFLAGS_BASE := \
+    -mcpu=cortex-m3 \
+    -mthumb \
+    $(OPT) \
+    -std=gnu99 \
+    -Wall -Wextra \
+    -fno-common \
+    $(ENDIAN_FLAG) \
+    $(ENUM_FLAG) \
+    $(WCHAR_FLAG) \
+    $(DEBUG_FLAG) \
+    -DPQM4 -DMLDSA_NO_RANDOMBYTES \
+    -I$(HERE)/ref \
+    -I$(HERE)/sc300 \
+    -I$(MCOMMON) \
+    -I$(COMMON) \
+    -I$(HERE)/cmsis \
+    $(MASK_CFLAGS) \
+    $(EXTRA_CFLAGS)
+
+CFLAGS65 := $(CFLAGS_BASE) -DMLDSA_MODE=65
+CFLAGS44 := $(CFLAGS_BASE) -DMLDSA_MODE=44
+CFLAGS   := $(CFLAGS_BASE)   # for mode-independent files
+
+include $(HERE)/sources.mk
+
+ifeq ($(USE_ASM_KECCAK),1)
+  SRCS_KECCAK_S := $(IMPL_SRCS_KECCAK_ASM)
+  SRCS_KECCAK_C :=
+else
+  SRCS_KECCAK_S :=
+  SRCS_KECCAK_C := $(IMPL_SRCS_KECCAK_C)
+endif
+
+# Mode-specific sources (compiled twice: once per param set)
+SRCS_MODE_C := $(IMPL_SRCS_REF_NONSIGN) $(IMPL_SRCS_SC300_C)
+SRCS_MODE_S := $(IMPL_SRCS_SC300_S)
+
+# Mode-independent sources (compiled once)
+SRCS_COMMON_C := $(IMPL_SRCS_FIPS202) $(SRCS_KECCAK_C) $(IMPL_SRCS_API)
+SRCS_COMMON_S := $(SRCS_KECCAK_S)
+
+OUT     := $(HERE)/output
+TAG     := gcc_$(ENDIAN_TAG)_$(ENUM_TAG)$(WCHAR_TAG)$(OPT_TAG)$(BUILD_TAG)
+OBJ_BASE := $(OUT)/obj/gcclib_$(ENDIAN_TAG)_$(ENUM_TAG)$(WCHAR_TAG)$(OPT_TAG)$(BUILD_TAG)
+OBJ_65  := $(OBJ_BASE)/m65
+OBJ_44  := $(OBJ_BASE)/m44
+OBJ_COM := $(OBJ_BASE)/common
+LIB     := $(OUT)/libmldsa_sc300_$(TAG).lib
+
+OBJS_65_C := $(addprefix $(OBJ_65)/,$(notdir $(patsubst %.c,%.o,$(SRCS_MODE_C))))
+OBJS_65_S := $(addprefix $(OBJ_65)/,$(notdir $(patsubst %.S,%.o,$(SRCS_MODE_S))))
+OBJS_44_C := $(addprefix $(OBJ_44)/,$(notdir $(patsubst %.c,%.o,$(SRCS_MODE_C))))
+OBJS_COM_C := $(addprefix $(OBJ_COM)/,$(notdir $(patsubst %.c,%.o,$(SRCS_COMMON_C))))
+OBJS_COM_S := $(addprefix $(OBJ_COM)/,$(notdir $(patsubst %.S,%.o,$(SRCS_COMMON_S))))
+
+OBJS := $(OBJS_65_C) $(OBJS_65_S) $(OBJS_44_C) $(OBJS_COM_C) $(OBJS_COM_S)
+
+.PHONY: all lib clean clean-all info
+
+all: lib
+
+lib: $(LIB)
+	@echo "Library: $(LIB)  (endian=$(ENDIAN_TAG), enum=$(ENUM_TAG), build=$(BUILD))"
+
+info:
+	@echo "BE=$(BE) ENUM=$(ENUM) BUILD=$(BUILD)"
+	@echo "CFLAGS_BASE=$(CFLAGS_BASE)"
+
+$(OBJ_65) $(OBJ_44) $(OBJ_COM):
+	mkdir -p $@
+
+# ---- ML-DSA-65 mode-specific C rules ----
+define CC65_RULE
+$(OBJ_65)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_65)
+	@echo "  CC65 $$<"
+	$(CC) $(CFLAGS65) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_MODE_C),$(eval $(call CC65_RULE,$(src))))
+
+# ---- ML-DSA-44 mode-specific C rules ----
+define CC44_RULE
+$(OBJ_44)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_44)
+	@echo "  CC44 $$<"
+	$(CC) $(CFLAGS44) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_MODE_C),$(eval $(call CC44_RULE,$(src))))
+
+# ---- ntt.S: compiled once under m65 (m44 symbols are aliases inside the asm) ----
+$(OBJ_65)/$(notdir $(patsubst %.S,%.o,$(IMPL_SRCS_SC300_S))): $(IMPL_SRCS_SC300_S) | $(OBJ_65)
+	@echo "  AS65 $<"
+	$(CC) $(CFLAGS_BASE) -c $< -o $@
+
+# ---- Common (mode-independent) C rules ----
+define CC_COM_RULE
+$(OBJ_COM)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_COM)
+	@echo "  CC   $$<"
+	$(CC) $(CFLAGS) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_COMMON_C),$(eval $(call CC_COM_RULE,$(src))))
+
+# ---- Common assembly (Keccak) ----
+define AS_COM_RULE
+$(OBJ_COM)/$(notdir $(patsubst %.S,%.o,$(1))): $(1) | $(OBJ_COM)
+	@echo "  AS   $$<"
+	$(CC) $(CFLAGS) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_COMMON_S),$(eval $(call AS_COM_RULE,$(src))))
+
+$(LIB): $(OBJS)
+	@echo "  AR   $@"
+	$(AR) rcs $@ $(OBJS)
+	@echo "  STRIP ($(BUILD)) $@"
+	$(STRIP_CMD) $@
+
+clean:
+	rm -rf $(OBJ_BASE) $(LIB)
+
+clean-all:
+	rm -rf $(OUT)/obj/gcclib_* $(OUT)/libmldsa_sc300_gcc_*.lib $(OUT)/libmldsa65_sc300_gcc_*.lib $(OUT)/libmldsa_sc300_gcc_*.a $(OUT)/libmldsa65_sc300_gcc_*.a

@@ -1,0 +1,293 @@
+# Makefile.armclang.lib —
+# Build ML-DSA-65 (SC300) as a static library for the caller to link.
+# Target : ARMv7-M (Cortex-M3 / SC300)
+# Toolchain: ARM Compiler 6  (armclang 6.x + armar)
+#
+# USAGE
+#   make -f Makefile.armclang.lib                          # LE, long enum
+#   make -f Makefile.armclang.lib BE=1                     # big-endian
+#   make -f Makefile.armclang.lib ENUM=short               # -fshort-enums
+#   make -f Makefile.armclang.lib ENUM=long                # -fno-short-enums
+#   make -f Makefile.armclang.lib BE=1 ENUM=short MASK_CFLAGS="-DMLDSA_MASK_RHOPRIME -DMLDSA_MASK_CS1"
+#   make -f Makefile.armclang.lib clean
+#   make -f Makefile.armclang.lib clean-all                # remove every config's obj_*
+#
+# OUTPUT
+#   libmldsa65_sc300_<endian>_<enum>.lib                     # static archive
+#
+# The output is an object-only archive: no startup code, no linker
+# script, no main().  Caller is expected to:
+#   - link against this .lib
+#   - provide their own `int randombytes(uint8_t *out, size_t n)`
+#   - include impl_sc300/api_wrapper.h and call the wrapper API
+#     (or include ref/api.h for the PQClean entry points)
+#
+# NOTES
+#  - Big-endian build:
+#      common/keccakf1600.S is LE-only (explicit header warning).
+#      For BE=1 we compile the pure-C mupq/common/keccakf1600.c
+#      instead, which is endian-neutral.  impl_sc300/sc300/ntt.S and
+#      common/mps2/startup_MPS2.S are NOT used -- ntt.S operates on
+#      int32_t lanes with 32-bit word ldr/str so it is endian-safe
+#      and IS included.  Masking sources use only uint64_t arithmetic
+#      with explicit shifts, which is C-portable across both endians.
+#  - Enum sizing:
+#      The codebase declares no enum types (verified), so enum width
+#      is an ABI-only concern with the caller.  Both -fshort-enums
+#      and -fno-short-enums produce byte-identical object files for
+#      these sources; the flag is plumbed for ABI matching only.
+
+# ------------------------------------------------------------------ #
+# Tools                                                               #
+# ------------------------------------------------------------------ #
+ARMCLANG ?= armclang
+ARMAR    ?= armar
+
+# ------------------------------------------------------------------ #
+# Paths                                                               #
+# ------------------------------------------------------------------ #
+HERE    := $(abspath .)
+
+COMMON  := $(HERE)/vendor/pqm4-common
+MCOMMON := $(HERE)/vendor/mupq-common
+
+# ------------------------------------------------------------------ #
+# Config knobs                                                        #
+# ------------------------------------------------------------------ #
+# BOARD presets override BE / ENUM / WCHAR with a known-good ABI match
+# so the caller does not have to pick each knob individually.  See also
+# tui.sh menu "Build library for board preset".
+ifneq ($(BOARD),)
+  ifeq ($(BOARD),S3SSE1A)
+    override BE    := 0
+    override ENUM  := long
+    override WCHAR := 16
+    override OPT   := -O0
+    BOARD_TAG := _S3SSE1A
+  else
+    $(error Unknown BOARD=$(BOARD). Supported boards: S3SSE1A)
+  endif
+else
+  BOARD_TAG :=
+endif
+
+BE    ?= 0
+ENUM  ?= long
+OPT   ?= -O2
+BUILD ?= release
+
+# Optimisation tag: empty for default -O2, '_O<n>' otherwise.
+ifeq ($(OPT),-O2)
+  OPT_TAG :=
+else
+  OPT_TAG := _$(patsubst -%,%,$(OPT))
+endif
+# ENUM values  : short | long
+# BUILD values : release | debug
+# Do not put a trailing '# comment' on '?=' lines -- make captures the
+# whole token-to-EOL as the value, so 'release   # debug' becomes the
+# literal value and fails the ifeq ($(BUILD),release) test below.
+
+ifeq ($(BE),1)
+  ENDIAN_FLAG := -mbig-endian
+  ENDIAN_TAG  := be
+  USE_ASM_KECCAK := 0
+else
+  ENDIAN_FLAG :=
+  ENDIAN_TAG  := le
+  USE_ASM_KECCAK := 1
+endif
+
+# wchar_t width — must match caller ABI or armlink L6242E (wchart-16 vs -32).
+#   WCHAR=32 (default): wchar_t = unsigned int  (AAPCS standard)
+#   WCHAR=16          : wchar_t = unsigned short (-fshort-wchar)
+WCHAR ?= 32
+ifeq ($(WCHAR),16)
+  WCHAR_FLAG := -fshort-wchar
+  WCHAR_TAG  := _w16
+else ifeq ($(WCHAR),32)
+  WCHAR_FLAG :=
+  WCHAR_TAG  :=
+else
+  $(error WCHAR must be one of: 16, 32)
+endif
+
+ifeq ($(ENUM),short)
+  ENUM_FLAG := -fshort-enums
+  ENUM_TAG  := short
+else ifeq ($(ENUM),long)
+  ENUM_FLAG := -fno-short-enums
+  ENUM_TAG  := long
+else
+  $(error ENUM must be one of: short, long)
+endif
+
+# Build profile
+#   release : -O2, no -g, archive re-created from stripped objects
+#   debug   : -O2 -g, DWARF kept, no post-strip (lib-test harness uses this)
+#
+# armclang / armar / fromelf: there's no single 'strip' equivalent, so
+# for release we simply don't emit -g.  For extra safety we also run
+# 'fromelf --strip=debug' on each object file before archiving.
+ifeq ($(BUILD),debug)
+  DEBUG_FLAG := -g -DMLDSA_BUILD_DEBUG
+  BUILD_TAG  := _dbg
+  POST_STRIP := :
+else ifeq ($(BUILD),release)
+  DEBUG_FLAG :=
+  BUILD_TAG  :=
+  POST_STRIP := $(FROMELF) --strip=debug --output
+else
+  $(error BUILD must be one of: release, debug)
+endif
+
+FROMELF ?= fromelf
+
+# ------------------------------------------------------------------ #
+# Compiler flags                                                      #
+# ------------------------------------------------------------------ #
+CFLAGS_BASE := \
+    --target=arm-arm-none-eabi \
+    -mcpu=cortex-m3 \
+    -mthumb \
+    $(OPT) \
+    -std=gnu99 \
+    -Wall -Wextra \
+    -fno-common \
+    $(ENDIAN_FLAG) \
+    $(ENUM_FLAG) \
+    $(WCHAR_FLAG) \
+    $(DEBUG_FLAG) \
+    -DPQM4 -DMLDSA_NO_RANDOMBYTES \
+    -I$(HERE)/ref \
+    -I$(HERE)/sc300 \
+    -I$(MCOMMON) \
+    -I$(COMMON) \
+    -I$(HERE)/cmsis \
+    $(MASK_CFLAGS) \
+    $(EXTRA_CFLAGS)
+
+CFLAGS65 := $(CFLAGS_BASE) -DMLDSA_MODE=65
+CFLAGS44 := $(CFLAGS_BASE) -DMLDSA_MODE=44
+CFLAGS   := $(CFLAGS_BASE)   # for mode-independent files
+
+# ------------------------------------------------------------------ #
+# Sources (shared definitions)                                        #
+# ------------------------------------------------------------------ #
+include $(HERE)/sources.mk
+
+# Keccak-f[1600] backend: ASM (LE only) or C reference (endian-safe)
+ifeq ($(USE_ASM_KECCAK),1)
+  SRCS_KECCAK_S := $(IMPL_SRCS_KECCAK_ASM)
+  SRCS_KECCAK_C :=
+else
+  SRCS_KECCAK_S :=
+  SRCS_KECCAK_C := $(IMPL_SRCS_KECCAK_C)
+endif
+
+# Mode-specific sources (compiled twice: once per param set)
+SRCS_MODE_C := $(IMPL_SRCS_REF_NONSIGN) $(IMPL_SRCS_SC300_C)
+SRCS_MODE_S := $(IMPL_SRCS_SC300_S)
+
+# Mode-independent sources (compiled once)
+SRCS_COMMON_C := $(IMPL_SRCS_FIPS202) $(SRCS_KECCAK_C) $(IMPL_SRCS_API)
+SRCS_COMMON_S := $(SRCS_KECCAK_S)
+
+# ------------------------------------------------------------------ #
+# Output locations                                                    #
+# ------------------------------------------------------------------ #
+OUT      := $(HERE)/output
+OBJ_BASE := $(OUT)/obj/armclanglib_$(ENDIAN_TAG)_$(ENUM_TAG)$(WCHAR_TAG)$(OPT_TAG)$(BOARD_TAG)$(BUILD_TAG)
+OBJ_65   := $(OBJ_BASE)/m65
+OBJ_44   := $(OBJ_BASE)/m44
+OBJ_COM  := $(OBJ_BASE)/common
+LIB      := $(OUT)/libmldsa65_sc300_$(ENDIAN_TAG)_$(ENUM_TAG)$(WCHAR_TAG)$(OPT_TAG)$(BOARD_TAG)$(BUILD_TAG).lib
+
+OBJS_65_C  := $(addprefix $(OBJ_65)/,$(notdir $(patsubst %.c,%.o,$(SRCS_MODE_C))))
+OBJS_65_S  := $(addprefix $(OBJ_65)/,$(notdir $(patsubst %.S,%.o,$(SRCS_MODE_S))))
+OBJS_44_C  := $(addprefix $(OBJ_44)/,$(notdir $(patsubst %.c,%.o,$(SRCS_MODE_C))))
+OBJS_COM_C := $(addprefix $(OBJ_COM)/,$(notdir $(patsubst %.c,%.o,$(SRCS_COMMON_C))))
+OBJS_COM_S := $(addprefix $(OBJ_COM)/,$(notdir $(patsubst %.S,%.o,$(SRCS_COMMON_S))))
+
+OBJS := $(OBJS_65_C) $(OBJS_65_S) $(OBJS_44_C) $(OBJS_COM_C) $(OBJS_COM_S)
+
+# ------------------------------------------------------------------ #
+# Default and phony targets                                           #
+# ------------------------------------------------------------------ #
+.PHONY: all lib clean clean-all info
+
+all: lib
+
+lib: $(LIB)
+	@echo ""
+	@echo "Static library built:  $(LIB)"
+	@echo "  endian : $(ENDIAN_TAG)"
+	@echo "  enum   : $(ENUM_TAG)"
+	@echo "  build  : $(BUILD)"
+	@echo "  keccak : $(if $(filter 1,$(USE_ASM_KECCAK)),ARMv7-M ASM,pure-C reference)"
+	@echo "  symbols: both PQCLEAN_MLDSA44_* and PQCLEAN_MLDSA65_*"
+
+info:
+	@echo "BE=$(BE)  ENUM=$(ENUM)"
+	@echo "CFLAGS_BASE=$(CFLAGS_BASE)"
+	@echo "SRCS_MODE_C=$(SRCS_MODE_C)"
+	@echo "SRCS_COMMON_C=$(SRCS_COMMON_C)"
+
+# ------------------------------------------------------------------ #
+# Compile rules                                                       #
+# ------------------------------------------------------------------ #
+$(OBJ_65) $(OBJ_44) $(OBJ_COM):
+	mkdir -p $@
+
+# ---- ML-DSA-65 mode-specific C rules ----
+define CC65_RULE
+$(OBJ_65)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_65)
+	@echo "  CC65 $$<"
+	$(ARMCLANG) $(CFLAGS65) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_MODE_C),$(eval $(call CC65_RULE,$(src))))
+
+# ---- ML-DSA-44 mode-specific C rules ----
+define CC44_RULE
+$(OBJ_44)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_44)
+	@echo "  CC44 $$<"
+	$(ARMCLANG) $(CFLAGS44) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_MODE_C),$(eval $(call CC44_RULE,$(src))))
+
+# ---- ntt.S: compiled once under m65 (mode-independent) ----
+$(OBJ_65)/$(notdir $(patsubst %.S,%.o,$(IMPL_SRCS_SC300_S))): $(IMPL_SRCS_SC300_S) | $(OBJ_65)
+	@echo "  AS65 $<"
+	$(ARMCLANG) $(CFLAGS_BASE) -c $< -o $@
+
+# ---- Common (mode-independent) C rules ----
+define CC_COM_RULE
+$(OBJ_COM)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_COM)
+	@echo "  CC   $$<"
+	$(ARMCLANG) $(CFLAGS) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_COMMON_C),$(eval $(call CC_COM_RULE,$(src))))
+
+# ---- Common assembly (Keccak) ----
+define AS_COM_RULE
+$(OBJ_COM)/$(notdir $(patsubst %.S,%.o,$(1))): $(1) | $(OBJ_COM)
+	@echo "  AS   $$<"
+	$(ARMCLANG) $(CFLAGS) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_COMMON_S),$(eval $(call AS_COM_RULE,$(src))))
+
+# ------------------------------------------------------------------ #
+# Archive                                                             #
+# ------------------------------------------------------------------ #
+$(LIB): $(OBJS)
+	@echo "  AR   $@"
+	$(ARMAR) --create $@ $(OBJS)
+
+# ------------------------------------------------------------------ #
+# Clean                                                               #
+# ------------------------------------------------------------------ #
+clean:
+	rm -rf $(OBJ_BASE) $(LIB)
+
+clean-all:
+	rm -rf $(OUT)/obj/armclanglib_* $(OUT)/libmldsa65_sc300_*.lib

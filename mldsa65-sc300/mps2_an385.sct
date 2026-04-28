@@ -1,0 +1,39 @@
+; mps2_an385.sct — armlink scatter file for QEMU mps2-an385 (Cortex-M3 / SC300)
+; DATA_IN_FLASH mode: code + data + BSS all in ZBT_SRAM1 (0x00000000)
+; Stack lives at top of ZBT_SRAM2 (0x20400000 downward)
+;
+; startup_MPS2.S uses #ifdef __ARMCC_VERSION branches:
+;   __StackTop    -> hardcoded 0x20400000 in vector table
+;   __bss_start__ -> Image$$ER_BSS$$Base     (armlink scatter symbol)
+;   __bss_end__   -> Image$$ER_BSS$$ZI$$Limit (armlink scatter symbol)
+;   _start        -> main (direct call)
+
+LR_FLASH 0x00000000 0x003F0000 {
+
+    ; Vector table must be first
+    ER_VECTORS 0x00000000 {
+        startup_MPS2.o (.vector_table, +First)
+    }
+
+    ; Read-only: code + rodata
+    ER_RO +0 {
+        * (+RO)
+    }
+
+    ; Initialised read-write data (in DATA_IN_FLASH, placed in "flash")
+    ER_RW +0 {
+        * (+RW)
+    }
+
+    ; Zero-initialised data (BSS) — startup zeros this region
+    ER_BSS +0 {
+        * (+ZI)
+    }
+
+}
+
+; Stack region at the very top of ZBT_SRAM2
+; EMPTY tells armlink the region is used at runtime but has no load content
+LR_RAM 0x20000000 0x00400000 {
+    ER_STACK 0x20400000 EMPTY -0x1000 {}
+}

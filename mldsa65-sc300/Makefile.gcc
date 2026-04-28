@@ -1,0 +1,375 @@
+# Makefile.gcc — impl_sc300 ML-DSA-65 QEMU test harness (arm-none-eabi-gcc)
+#
+# Targets:
+#   build     compile output/mldsa65_test.elf (gcc, direct-object)
+#   qemu      run the elf on QEMU mps2-an385
+#   build_lib compile output/mldsa65_test_via_lib.elf -- the test
+#             harness links only against the DEBUG library archive
+#             (public-API-only caller simulation)
+#   qemu_lib  run the library-linked elf on QEMU
+#   size      arm-none-eabi-size report on the primary elf
+#   clean     delete every artefact under output/
+#
+# Paths auto-detected from tools/env.sh.  Overrides accepted via env/CLI:
+#   GNU_TC=/path/to/arm-gnu-toolchain   QEMU=/path/to/qemu-system-arm
+
+HERE    := $(abspath .)
+COMMON  := $(HERE)/vendor/pqm4-common
+MCOMMON := $(HERE)/vendor/mupq-common
+
+# All generated files live under output/.
+OUT     := $(HERE)/output
+
+GNU_TC  ?= /tmp/arm-gnu-toolchain-13.3.rel1-darwin-arm64-arm-none-eabi
+QEMU    ?= /opt/homebrew/bin/qemu-system-arm
+
+# Use ':=' so make's built-in CC=cc doesn't hijack via '?='.
+CC      := $(GNU_TC)/bin/arm-none-eabi-gcc
+LD      := $(GNU_TC)/bin/arm-none-eabi-gcc
+AR      := $(GNU_TC)/bin/arm-none-eabi-ar
+OBJCOPY := $(GNU_TC)/bin/arm-none-eabi-objcopy
+SIZE    := $(GNU_TC)/bin/arm-none-eabi-size
+
+ARCH_FLAGS := -mcpu=cortex-m3 -mthumb
+
+CFLAGS := $(ARCH_FLAGS) \
+          -O2 -std=gnu99 -Wall -Wextra -fno-common \
+          -DPQM4 -DMPS2_AN385 -DMUPQ_NAMESPACE= \
+          -I$(MCOMMON) -I$(HERE)/cmsis -I$(COMMON)/mps2 \
+          -I$(HERE)/ref -I$(HERE)/sc300 \
+          $(EXTRA_CFLAGS)
+
+# --no-warn-rwx-segments exists only in binutils >= 2.39; detect.
+LD_BIN        := $(shell $(CC) -print-prog-name=ld 2>/dev/null)
+LD_RWX_FLAG   := $(shell $(LD_BIN) --help 2>/dev/null | grep -q -- '--no-warn-rwx-segments' && echo '-Wl,--no-warn-rwx-segments')
+
+LDFLAGS := $(ARCH_FLAGS) \
+           -nostartfiles \
+           -Wl,--defsym=_start=main \
+           --specs=nosys.specs --specs=rdimon.specs \
+           -Wl,--gc-sections $(LD_RWX_FLAG) \
+           -Wl,--wrap=_sbrk  -Wl,--wrap=_open  -Wl,--wrap=_close \
+           -Wl,--wrap=_isatty -Wl,--wrap=_kill -Wl,--wrap=_lseek \
+           -Wl,--wrap=_read  -Wl,--wrap=_write -Wl,--wrap=_fstat \
+           -Wl,--wrap=_getpid \
+           -T $(OUT)/ldscript.ld
+
+# ------------------------------------------------------------------ #
+# Sources (shared list)                                               #
+# ------------------------------------------------------------------ #
+include $(HERE)/sources.mk
+
+# ------------------------------------------------------------------ #
+# Primary QEMU test target (sc300 streaming sign + ARMv7-M NTT asm)   #
+# ------------------------------------------------------------------ #
+OBJ_DIR_S8 := $(OUT)/obj/test
+
+SRCS_C_S8 := \
+    $(HERE)/test/test_mldsa65_main.c \
+    $(HERE)/test/kat_data.c \
+    $(HERE)/test/hal_m3.c \
+    $(IMPL_SRCS_FIPS202) \
+    $(IMPL_SRCS_RANDOMBYTES) \
+    $(IMPL_SRCS_REF_NONSIGN) \
+    $(IMPL_SRCS_SC300_C)
+
+SRCS_S_S8 := \
+    $(IMPL_SRCS_KECCAK_ASM) \
+    $(IMPL_SRCS_MPS2_STARTUP_S) \
+    $(IMPL_SRCS_SC300_S)
+
+OBJS_C_S8 := $(addprefix $(OBJ_DIR_S8)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_S8))))
+OBJS_S_S8 := $(addprefix $(OBJ_DIR_S8)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_S8))))
+OBJS_S8   := $(OBJS_C_S8) $(OBJS_S_S8)
+
+.PHONY: all build build65 qemu qemu65 size build44 qemu44 build_lib qemu_lib clean \
+        build65_gate build44_gate \
+        qemu65_quick qemu44_quick \
+        build_quick
+
+all: build
+
+# ---- C compile rules (explicit per source so cross-dir basenames work) ----
+$(OBJ_DIR_S8):
+	mkdir -p $(OBJ_DIR_S8)
+
+$(OBJ_DIR_S8)/test_mldsa65_main.o: $(HERE)/test/test_mldsa65_main.c \
+                                   $(HERE)/test/kat_vectors.h | $(OBJ_DIR_S8)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS) -I$(HERE)/test -c $< -o $@
+$(OBJ_DIR_S8)/kat_data.o: $(HERE)/test/kat_data.c \
+                           $(HERE)/test/kat_vectors.h | $(OBJ_DIR_S8)
+	@echo "  CC   $< (ACVP data, may be slow)"
+	$(CC) $(CFLAGS) -I$(HERE)/test -c $< -o $@
+$(OBJ_DIR_S8)/hal_m3.o: $(HERE)/test/hal_m3.c | $(OBJ_DIR_S8)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR_S8)/fips202.o: $(MCOMMON)/fips202.c | $(OBJ_DIR_S8)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR_S8)/randombytes.o: $(COMMON)/randombytes.c | $(OBJ_DIR_S8)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS) -I$(COMMON) -I$(MCOMMON) -c $< -o $@
+
+define REF_RULE
+$(OBJ_DIR_S8)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_S8)
+	@echo "  CC   $$<"
+	$(CC) $(CFLAGS) -DMLDSA_MODE=65 -c $$< -o $$@
+endef
+$(foreach src,$(IMPL_SRCS_REF_NONSIGN),$(eval $(call REF_RULE,$(src))))
+
+define SC300_C_RULE
+$(OBJ_DIR_S8)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_S8)
+	@echo "  CC   $$<"
+	$(CC) $(CFLAGS) -DMLDSA_MODE=65 -c $$< -o $$@
+endef
+$(foreach src,$(IMPL_SRCS_SC300_C),$(eval $(call SC300_C_RULE,$(src))))
+
+# ---- assembly rules ----
+$(OBJ_DIR_S8)/keccakf1600.o: $(COMMON)/keccakf1600.S | $(OBJ_DIR_S8)
+	@echo "  AS   $<  (ARMv7-M, no DSP)"
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR_S8)/startup_MPS2.o: $(COMMON)/mps2/startup_MPS2.S | $(OBJ_DIR_S8)
+	@echo "  AS   $<"
+	$(CC) $(CFLAGS) -DDATA_IN_FLASH -I$(COMMON)/mps2 -c $< -o $@
+$(OBJ_DIR_S8)/ntt.o: $(HERE)/sc300/ntt.S | $(OBJ_DIR_S8)
+	@echo "  AS   $<  (ARMv7-M NTT)"
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# ---- linker script (generated from MPS2.ld template) ----
+$(OUT)/ldscript.ld: $(COMMON)/mps2/MPS2.ld | $(OUT)
+	@echo "  CPP  $<"
+	$(CC) $(ARCH_FLAGS) -x assembler-with-cpp -E -Wp,-P \
+	    -DDATA_IN_FLASH -I$(COMMON)/mps2 $< -o $@
+$(OUT):
+	mkdir -p $(OUT)
+
+# ---- S8 link ----
+$(OUT)/mldsa65_test.elf: $(OBJS_S8) $(OUT)/ldscript.ld | $(OUT)
+	@echo "  LD   $@"
+	$(LD) $(LDFLAGS) $(OBJS_S8) -lm -o $@
+$(OUT)/mldsa65_test.bin: $(OUT)/mldsa65_test.elf
+	@echo "  BIN  $@"
+	$(OBJCOPY) -O binary $< $@
+
+build: $(OUT)/mldsa65_test.elf $(OUT)/mldsa65_test.bin
+	@echo ""
+	@echo "QEMU test build OK  ->  $(OUT)/mldsa65_test.elf"
+	@echo "Run: make -f Makefile.gcc qemu"
+
+qemu: $(OUT)/mldsa65_test.elf
+	@echo "Running S8 on QEMU mps2-an385..."
+	$(QEMU) -M mps2-an385 -nographic -semihosting -kernel $<
+
+size: $(OUT)/mldsa65_test.elf
+	$(SIZE) $<
+
+# ------------------------------------------------------------------ #
+# ML-DSA-44 QEMU test target                                          #
+# ------------------------------------------------------------------ #
+OBJ_DIR_44 := $(OUT)/obj/test44
+
+SRCS_C_44 := \
+    $(HERE)/test/test_mldsa44_main.c \
+    $(HERE)/test/kat_data44.c \
+    $(HERE)/test/hal_m3.c \
+    $(IMPL_SRCS_FIPS202) \
+    $(IMPL_SRCS_RANDOMBYTES) \
+    $(IMPL_SRCS_REF_NONSIGN) \
+    $(IMPL_SRCS_SC300_C)
+
+SRCS_S_44 := \
+    $(IMPL_SRCS_KECCAK_ASM) \
+    $(IMPL_SRCS_MPS2_STARTUP_S) \
+    $(IMPL_SRCS_SC300_S)
+
+OBJS_C_44 := $(addprefix $(OBJ_DIR_44)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_44))))
+OBJS_S_44 := $(addprefix $(OBJ_DIR_44)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_44))))
+OBJS_44   := $(OBJS_C_44) $(OBJS_S_44)
+
+$(OBJ_DIR_44):
+	mkdir -p $(OBJ_DIR_44)
+
+$(OBJ_DIR_44)/test_mldsa44_main.o: $(HERE)/test/test_mldsa44_main.c \
+                                    $(HERE)/test/kat_vectors44.h | $(OBJ_DIR_44)
+	@echo "  CC44 $<"
+	$(CC) $(CFLAGS) -DMLDSA_MODE=44 -I$(HERE)/test -c $< -o $@
+$(OBJ_DIR_44)/kat_data44.o: $(HERE)/test/kat_data44.c \
+                              $(HERE)/test/kat_vectors44.h | $(OBJ_DIR_44)
+	@echo "  CC44 $< (ACVP data, may be slow)"
+	$(CC) $(CFLAGS) -DMLDSA_MODE=44 -I$(HERE)/test -c $< -o $@
+$(OBJ_DIR_44)/hal_m3.o: $(HERE)/test/hal_m3.c | $(OBJ_DIR_44)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR_44)/fips202.o: $(MCOMMON)/fips202.c | $(OBJ_DIR_44)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR_44)/randombytes.o: $(COMMON)/randombytes.c | $(OBJ_DIR_44)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS) -I$(COMMON) -I$(MCOMMON) -c $< -o $@
+
+define REF_RULE44
+$(OBJ_DIR_44)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_44)
+	@echo "  CC44 $$<"
+	$(CC) $(CFLAGS) -DMLDSA_MODE=44 -c $$< -o $$@
+endef
+$(foreach src,$(IMPL_SRCS_REF_NONSIGN),$(eval $(call REF_RULE44,$(src))))
+
+define SC300_C_RULE44
+$(OBJ_DIR_44)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_44)
+	@echo "  CC44 $$<"
+	$(CC) $(CFLAGS) -DMLDSA_MODE=44 -c $$< -o $$@
+endef
+$(foreach src,$(IMPL_SRCS_SC300_C),$(eval $(call SC300_C_RULE44,$(src))))
+
+$(OBJ_DIR_44)/keccakf1600.o: $(COMMON)/keccakf1600.S | $(OBJ_DIR_44)
+	@echo "  AS   $<  (ARMv7-M, no DSP)"
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR_44)/startup_MPS2.o: $(COMMON)/mps2/startup_MPS2.S | $(OBJ_DIR_44)
+	@echo "  AS   $<"
+	$(CC) $(CFLAGS) -DDATA_IN_FLASH -I$(COMMON)/mps2 -c $< -o $@
+$(OBJ_DIR_44)/ntt.o: $(HERE)/sc300/ntt.S | $(OBJ_DIR_44)
+	@echo "  AS   $<  (ARMv7-M NTT)"
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OUT)/mldsa44_test.elf: $(OBJS_44) $(OUT)/ldscript.ld | $(OUT)
+	@echo "  LD   $@"
+	$(LD) $(LDFLAGS) $(OBJS_44) -lm -o $@
+
+build44: $(OUT)/mldsa44_test.elf
+	@echo ""
+	@echo "ML-DSA-44 QEMU test build OK  ->  $(OUT)/mldsa44_test.elf"
+	@echo "Run: make -f Makefile.gcc qemu44"
+
+qemu44: $(OUT)/mldsa44_test.elf
+	@echo "Running ML-DSA-44 on QEMU mps2-an385..."
+	$(QEMU) -M mps2-an385 -nographic -semihosting -kernel $<
+
+# ------------------------------------------------------------------ #
+# Gate targets (quick smoke-test: EXT-GATE + INT-GATE, no KAT data)   #
+# ------------------------------------------------------------------ #
+
+# Base objects: everything except test main and KAT data
+OBJS_65_BASE := $(filter-out \
+    $(OBJ_DIR_S8)/test_mldsa65_main.o \
+    $(OBJ_DIR_S8)/kat_data.o, $(OBJS_S8))
+OBJS_44_BASE := $(filter-out \
+    $(OBJ_DIR_44)/test_mldsa44_main.o \
+    $(OBJ_DIR_44)/kat_data44.o, $(OBJS_44))
+
+# ---- ML-DSA-65 gate ----
+$(OUT)/obj/test65_gate:
+	mkdir -p $@
+
+$(OUT)/obj/test65_gate/test_mldsa65_main.o: \
+        $(HERE)/test/test_mldsa65_main.c \
+        $(HERE)/test/kat_vectors.h | $(OUT)/obj/test65_gate
+	@echo "  CC65[gate] $<"
+	$(CC) $(CFLAGS) -DMLDSA_MODE=65 -DKAT_GATE_ONLY -I$(HERE)/test -c $< -o $@
+
+$(OUT)/mldsa65_gate.elf: $(OBJS_65_BASE) \
+        $(OUT)/obj/test65_gate/test_mldsa65_main.o \
+        $(OUT)/ldscript.ld | $(OUT)
+	@echo "  LD   $@"
+	$(LD) $(LDFLAGS) $(OBJS_65_BASE) \
+	    $(OUT)/obj/test65_gate/test_mldsa65_main.o -lm -o $@
+
+build65_gate: $(OUT)/mldsa65_gate.elf
+	@echo "ML-DSA-65 gate ELF ready: $<"
+
+build65: build
+qemu65:  qemu
+
+qemu65_quick: $(OUT)/mldsa65_gate.elf
+	@echo "Running ML-DSA-65 gate (quick) on QEMU..."
+	$(QEMU) -M mps2-an385 -nographic -semihosting -kernel $<
+
+# ---- ML-DSA-44 gate ----
+$(OUT)/obj/test44_gate:
+	mkdir -p $@
+
+$(OUT)/obj/test44_gate/test_mldsa44_main.o: \
+        $(HERE)/test/test_mldsa44_main.c \
+        $(HERE)/test/kat_vectors44.h | $(OUT)/obj/test44_gate
+	@echo "  CC44[gate] $<"
+	$(CC) $(CFLAGS) -DMLDSA_MODE=44 -DKAT_GATE_ONLY -I$(HERE)/test -c $< -o $@
+
+$(OUT)/mldsa44_gate.elf: $(OBJS_44_BASE) \
+        $(OUT)/obj/test44_gate/test_mldsa44_main.o \
+        $(OUT)/ldscript.ld | $(OUT)
+	@echo "  LD   $@"
+	$(LD) $(LDFLAGS) $(OBJS_44_BASE) \
+	    $(OUT)/obj/test44_gate/test_mldsa44_main.o -lm -o $@
+
+build44_gate: $(OUT)/mldsa44_gate.elf
+	@echo "ML-DSA-44 gate ELF ready: $<"
+
+qemu44_quick: $(OUT)/mldsa44_gate.elf
+	@echo "Running ML-DSA-44 gate (quick) on QEMU..."
+	$(QEMU) -M mps2-an385 -nographic -semihosting -kernel $<
+
+# Convenience: build both gate ELFs
+build_quick: build65_gate build44_gate
+
+# ------------------------------------------------------------------ #
+# qemu_lib — library-consumer test: links the DEBUG archive only      #
+# ------------------------------------------------------------------ #
+OBJ_DIR_LIB_TEST := $(OUT)/obj/test_via_lib
+LIB_DEBUG        := $(OUT)/libmldsa_sc300_gcc_le_long_dbg.lib
+
+# Match debug library ABI (ENUM=long).
+CFLAGS_LIB_TEST  := $(CFLAGS) -fno-short-enums -I$(HERE) -I$(HERE)/test
+
+TEST_LIB_OBJS := \
+    $(OBJ_DIR_LIB_TEST)/test_via_lib_main.o \
+    $(OBJ_DIR_LIB_TEST)/hal_m3.o \
+    $(OBJ_DIR_LIB_TEST)/randombytes.o \
+    $(OBJ_DIR_LIB_TEST)/startup_MPS2.o
+
+$(OBJ_DIR_LIB_TEST):
+	mkdir -p $(OBJ_DIR_LIB_TEST)
+
+$(OBJ_DIR_LIB_TEST)/test_via_lib_main.o: $(HERE)/test/test_via_lib_main.c \
+                                         $(HERE)/test/kat139.h \
+                                         $(HERE)/mldsa65_sc300.h \
+                                         | $(OBJ_DIR_LIB_TEST)
+	@echo "  CC   $<  (public-API only)"
+	$(CC) $(CFLAGS_LIB_TEST) -c $< -o $@
+$(OBJ_DIR_LIB_TEST)/hal_m3.o: $(HERE)/test/hal_m3.c | $(OBJ_DIR_LIB_TEST)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS_LIB_TEST) -c $< -o $@
+$(OBJ_DIR_LIB_TEST)/randombytes.o: $(COMMON)/randombytes.c | $(OBJ_DIR_LIB_TEST)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS_LIB_TEST) -I$(COMMON) -I$(MCOMMON) -c $< -o $@
+$(OBJ_DIR_LIB_TEST)/startup_MPS2.o: $(COMMON)/mps2/startup_MPS2.S | $(OBJ_DIR_LIB_TEST)
+	@echo "  AS   $<"
+	$(CC) $(CFLAGS_LIB_TEST) -DDATA_IN_FLASH -I$(COMMON)/mps2 -c $< -o $@
+
+# Always re-invoke the library Makefile (FORCE) so source edits flow
+# through into the debug archive.
+$(LIB_DEBUG): FORCE
+	@echo "  SUB  Debug library via Makefile.gcc.lib"
+	$(MAKE) --no-print-directory -f Makefile.gcc.lib \
+	    BE=0 ENUM=long BUILD=debug \
+	    GNU_TC="$(GNU_TC)" CC="$(CC)" AR="$(AR)" \
+	    MASK_CFLAGS="$(EXTRA_CFLAGS)"
+FORCE:
+
+$(OUT)/mldsa65_test_via_lib.elf: $(TEST_LIB_OBJS) $(LIB_DEBUG) $(OUT)/ldscript.ld | $(OUT)
+	@echo "  LD   $@  (test + debug library)"
+	$(LD) $(LDFLAGS) -Wl,--no-warn-mismatch $(TEST_LIB_OBJS) $(LIB_DEBUG) -lm -o $@
+
+build_lib: $(OUT)/mldsa65_test_via_lib.elf
+	@echo ""
+	@echo "Library-linked test ready  ->  $(OUT)/mldsa65_test_via_lib.elf"
+	@echo "Run: make -f Makefile.gcc qemu_lib"
+
+qemu_lib: $(OUT)/mldsa65_test_via_lib.elf
+	@echo "Running via-library QEMU test (debug lib, public API only)..."
+	$(QEMU) -M mps2-an385 -nographic -semihosting -kernel $<
+
+# ------------------------------------------------------------------ #
+clean:
+	rm -rf $(OUT)/obj $(OUT)/*.elf $(OUT)/*.bin $(OUT)/*.a $(OUT)/*.map \
+	       $(OUT)/ldscript.ld
+	@echo "cleaned  ->  $(OUT)"
