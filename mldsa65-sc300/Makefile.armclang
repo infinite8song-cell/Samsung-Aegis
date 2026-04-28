@@ -80,7 +80,12 @@ SRCS_C_S8 := \
     $(HERE)/sc300/masked_cs2_ct0.c \
     $(HERE)/sc300/masked_y_sample.c \
     $(HERE)/sc300/masked_chknorm.c \
-    $(HERE)/sc300/masked_ba.c
+    $(HERE)/sc300/masked_ba.c \
+    $(HERE)/sc300/cm_shuffling.c \
+    $(HERE)/sc300/cm_masking.c \
+    $(HERE)/sc300/cm_parity.c \
+    $(HERE)/sc300/cm_integrity.c \
+    $(HERE)/sc300/cm_rice_checksum.c
 
 SRCS_S_S8 := \
     $(COMMON)/keccakf1600.S \
@@ -91,7 +96,7 @@ OBJS_C_S8 := $(addprefix $(OBJ_DIR_S8_AC)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_
 OBJS_S_S8 := $(addprefix $(OBJ_DIR_S8_AC)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_S8))))
 OBJS_S8   := $(OBJS_C_S8) $(OBJS_S_S8)
 
-.PHONY: all build build44 qemu qemu44 clean
+.PHONY: all build build44 build_kem768 qemu qemu44 qemu_kem768 clean
 
 all: build build44
 
@@ -168,7 +173,12 @@ MASKED_SRCS_S8 := \
     $(HERE)/sc300/masked_cs2_ct0.c \
     $(HERE)/sc300/masked_y_sample.c \
     $(HERE)/sc300/masked_chknorm.c \
-    $(HERE)/sc300/masked_ba.c
+    $(HERE)/sc300/masked_ba.c \
+    $(HERE)/sc300/cm_shuffling.c \
+    $(HERE)/sc300/cm_masking.c \
+    $(HERE)/sc300/cm_parity.c \
+    $(HERE)/sc300/cm_integrity.c \
+    $(HERE)/sc300/cm_rice_checksum.c
 $(foreach src,$(MASKED_SRCS_S8),$(eval $(call CC_MASKED_RULE_S8,$(src))))
 
 # ------------------------------------------------------------------ #
@@ -223,7 +233,12 @@ SRCS_C_44 := \
     $(HERE)/sc300/masked_cs2_ct0.c \
     $(HERE)/sc300/masked_y_sample.c \
     $(HERE)/sc300/masked_chknorm.c \
-    $(HERE)/sc300/masked_ba.c
+    $(HERE)/sc300/masked_ba.c \
+    $(HERE)/sc300/cm_shuffling.c \
+    $(HERE)/sc300/cm_masking.c \
+    $(HERE)/sc300/cm_parity.c \
+    $(HERE)/sc300/cm_integrity.c \
+    $(HERE)/sc300/cm_rice_checksum.c
 
 SRCS_S_44 := \
     $(COMMON)/keccakf1600.S \
@@ -281,10 +296,95 @@ qemu44: $(OUT)/mldsa44_test_armclang.elf
 	        -kernel $(OUT)/mldsa44_test_armclang.elf
 
 # ------------------------------------------------------------------ #
+# ------------------------------------------------------------------ #
+# ML-KEM-768 QEMU test target (Phase A: clean reference only)         #
+# ------------------------------------------------------------------ #
+OBJ_DIR_KEM768_AC := $(OUT)/obj/test_kem768_armclang
+
+# Dedicated CFLAGS: include ref_kem/ only, NOT ref/, to avoid api.h collision
+CFLAGS_KEM768 := \
+    --target=arm-arm-none-eabi \
+    -mcpu=cortex-m3 -mthumb \
+    -O2 -std=gnu99 -Wall -Wextra -fno-common \
+    -DPQM4 -DMPS2_AN385 -DDATA_IN_FLASH \
+    -I$(HERE)/ref_kem -I$(HERE)/test \
+    -I$(HERE)/sc300 -I$(HERE) \
+    -I$(MCOMMON) -I$(HERE)/cmsis -I$(COMMON)/mps2 \
+    $(EXTRA_CFLAGS)
+
+SRCS_C_KEM768 := \
+    $(HERE)/test/test_mlkem768_main.c \
+    $(HERE)/test/hal_m3.c \
+    $(MCOMMON)/fips202.c \
+    $(COMMON)/randombytes.c \
+    $(HERE)/ref_kem/cbd.c \
+    $(HERE)/ref_kem/indcpa.c \
+    $(HERE)/ref_kem/kem.c \
+    $(HERE)/ref_kem/ntt.c \
+    $(HERE)/ref_kem/poly.c \
+    $(HERE)/ref_kem/polyvec.c \
+    $(HERE)/ref_kem/reduce.c \
+    $(HERE)/ref_kem/symmetric-shake.c \
+    $(HERE)/ref_kem/verify.c \
+    $(HERE)/sc300_kem/kem_cm.c \
+    $(HERE)/api_wrapper_kem.c \
+    $(HERE)/sc300/cm_shuffling.c \
+    $(HERE)/sc300/cm_masking.c \
+    $(HERE)/sc300/cm_parity.c \
+    $(HERE)/sc300/cm_integrity.c \
+    $(HERE)/sc300/cm_rice_checksum.c
+
+SRCS_S_KEM768 := \
+    $(COMMON)/keccakf1600.S \
+    $(COMMON)/mps2/startup_MPS2.S
+
+OBJS_C_KEM768 := $(addprefix $(OBJ_DIR_KEM768_AC)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_KEM768))))
+OBJS_S_KEM768 := $(addprefix $(OBJ_DIR_KEM768_AC)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_KEM768))))
+OBJS_KEM768   := $(OBJS_C_KEM768) $(OBJS_S_KEM768)
+
+$(OBJ_DIR_KEM768_AC):
+	mkdir -p $(OBJ_DIR_KEM768_AC)
+
+define CC_KEM768_RULE
+$(OBJ_DIR_KEM768_AC)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_KEM768_AC)
+	@echo "  CCKEM $$<"
+	$(ARMCLANG) $(CFLAGS_KEM768) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_C_KEM768),$(eval $(call CC_KEM768_RULE,$(src))))
+
+define AS_KEM768_RULE
+$(OBJ_DIR_KEM768_AC)/$(notdir $(patsubst %.S,%.o,$(1))): $(1) | $(OBJ_DIR_KEM768_AC)
+	@echo "  ASKEM $$<"
+	$(ARMCLANG) $(CFLAGS_KEM768) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_S_KEM768),$(eval $(call AS_KEM768_RULE,$(src))))
+
+$(OUT)/mlkem768_test_armclang.elf: $(OBJS_KEM768) $(SCATTER)
+	@echo "  LD   $@"
+	$(ARMLINK) --cpu=Cortex-M3 --scatter=$(SCATTER) --entry=Reset_Handler \
+	    --diag_suppress=6306 \
+	    --map --list $(OUT)/mlkem768_test_armclang.map $(OBJS_KEM768) -o $@
+
+$(OUT)/mlkem768_test_armclang.bin: $(OUT)/mlkem768_test_armclang.elf
+	@echo "  BIN  $@"
+	$(FROMELF) --bin --output=$@ $<
+
+build_kem768: $(OUT)/mlkem768_test_armclang.elf $(OUT)/mlkem768_test_armclang.bin
+	@echo ""
+	@echo "QEMU test build OK (armclang / Cortex-M3 / ML-KEM-768)"
+	@echo "Run: make -f Makefile.armclang qemu_kem768"
+
+qemu_kem768: $(OUT)/mlkem768_test_armclang.elf
+	@echo "Running ML-KEM-768 (armclang) on QEMU mps2-an385..."
+	$(QEMU) -M mps2-an385 -nographic -semihosting \
+	        -kernel $(OUT)/mlkem768_test_armclang.elf
+
+# ------------------------------------------------------------------ #
 # Clean
 # ------------------------------------------------------------------ #
 clean:
-	rm -rf $(OBJ_DIR_S8_AC) $(OBJ_DIR_44_AC) \
+	rm -rf $(OBJ_DIR_S8_AC) $(OBJ_DIR_44_AC) $(OBJ_DIR_KEM768_AC) \
 	       $(OUT)/mldsa65_test_armclang.elf $(OUT)/mldsa65_test_armclang.bin $(OUT)/mldsa65_test_armclang.map \
-	       $(OUT)/mldsa44_test_armclang.elf $(OUT)/mldsa44_test_armclang.bin $(OUT)/mldsa44_test_armclang.map
+	       $(OUT)/mldsa44_test_armclang.elf $(OUT)/mldsa44_test_armclang.bin $(OUT)/mldsa44_test_armclang.map \
+	       $(OUT)/mlkem768_test_armclang.elf $(OUT)/mlkem768_test_armclang.bin $(OUT)/mlkem768_test_armclang.map
 	@echo "cleaned  ->  $(OUT)"

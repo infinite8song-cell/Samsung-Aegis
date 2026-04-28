@@ -20,6 +20,32 @@ IMPL_SRCS_REF_NONSIGN := \
     $(HERE)/ref/rounding.c \
     $(HERE)/ref/symmetric-shake.c
 
+# ------------------------------------------------------------------ #
+# Issue #5 — Countermeasure 모듈 (KEM, DSA 공용)                      #
+# ------------------------------------------------------------------ #
+IMPL_SRCS_CM_C := \
+    $(HERE)/sc300/cm_shuffling.c \
+    $(HERE)/sc300/cm_masking.c \
+    $(HERE)/sc300/cm_parity.c \
+    $(HERE)/sc300/cm_integrity.c \
+    $(HERE)/sc300/cm_rice_checksum.c
+
+# ------------------------------------------------------------------ #
+# ML-KEM-768 clean reference (PQClean)                                 #
+# ------------------------------------------------------------------ #
+IMPL_SRCS_REF_KEM768 := \
+    $(HERE)/ref_kem/cbd.c \
+    $(HERE)/ref_kem/kem.c \
+    $(HERE)/ref_kem/ntt.c \
+    $(HERE)/ref_kem/poly.c \
+    $(HERE)/ref_kem/polyvec.c \
+    $(HERE)/ref_kem/reduce.c \
+    $(HERE)/ref_kem/symmetric-shake.c \
+    $(HERE)/ref_kem/verify.c \
+    $(HERE)/sc300_kem/indcpa.c \
+    $(HERE)/sc300_kem/kem_cm.c \
+    $(IMPL_SRCS_CM_C)
+
 # Pristine PQClean reference sign.c / ntt.c kept in tree for audit, but
 # NOT linked by any active build -- every target uses sc300/sign.c and
 # sc300/ntt.S (the optimised replacements).
@@ -29,7 +55,7 @@ IMPL_SRCS_REF_NTT_UNUSED  := $(HERE)/ref/ntt.c
 # ------------------------------------------------------------------ #
 # sc300 custom                                                         #
 # ------------------------------------------------------------------ #
-# Streaming sign + masked kernels
+# Streaming sign + masked kernels  (DSA-side; CM 모듈은 IMPL_SRCS_CM_C)
 IMPL_SRCS_SC300_C := \
     $(HERE)/sc300/sign.c \
     $(HERE)/sc300/masked_random.c \
@@ -39,7 +65,8 @@ IMPL_SRCS_SC300_C := \
     $(HERE)/sc300/masked_cs2_ct0.c \
     $(HERE)/sc300/masked_y_sample.c \
     $(HERE)/sc300/masked_chknorm.c \
-    $(HERE)/sc300/masked_ba.c
+    $(HERE)/sc300/masked_ba.c \
+    $(IMPL_SRCS_CM_C)
 
 # Hand-tuned ARMv7-M NTT (endian-safe; always included)
 IMPL_SRCS_SC300_S := $(HERE)/sc300/ntt.S
@@ -79,6 +106,13 @@ IMPL_SRCS_LIB_C := \
     $(IMPL_SRCS_API)
 
 IMPL_SRCS_LIB_S := $(IMPL_SRCS_SC300_S)
+
+# ML-KEM-768 library-runtime set (co-exported alongside ML-DSA).
+# All sources are mode-independent (no MLDSA_MODE flag) and live in
+# their own object directory to avoid filename collisions with ML-DSA.
+IMPL_SRCS_LIB_KEM768_C := \
+    $(IMPL_SRCS_REF_KEM768) \
+    $(HERE)/api_wrapper_kem.c
 
 # Library-runtime set plus the Keccak-C backend (used on BE builds).
 # LE builds add IMPL_SRCS_KECCAK_ASM instead.

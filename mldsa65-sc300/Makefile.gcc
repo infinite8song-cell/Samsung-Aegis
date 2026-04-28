@@ -25,10 +25,36 @@ QEMU    ?= /opt/homebrew/bin/qemu-system-arm
 
 # Use ':=' so make's built-in CC=cc doesn't hijack via '?='.
 CC      := $(GNU_TC)/bin/arm-none-eabi-gcc
-LD      := $(GNU_TC)/bin/arm-none-eabi-gcc
 AR      := $(GNU_TC)/bin/arm-none-eabi-ar
 OBJCOPY := $(GNU_TC)/bin/arm-none-eabi-objcopy
 SIZE    := $(GNU_TC)/bin/arm-none-eabi-size
+
+# If the primary toolchain lacks newlib specs, fall back to Homebrew
+# arm-none-eabi-gcc for linking (it has libgcc).
+_HAS_SPECS := $(shell $(GNU_TC)/bin/arm-none-eabi-gcc \
+                -mcpu=cortex-m3 -mthumb --specs=nosys.specs \
+                -E /dev/null 2>/dev/null && echo yes || echo no)
+ifeq ($(_HAS_SPECS),yes)
+  LD           := $(GNU_TC)/bin/arm-none-eabi-gcc
+  LDFLAGS_SPEC := --specs=nosys.specs --specs=rdimon.specs \
+                  -Wl,--wrap=_sbrk  -Wl,--wrap=_open  -Wl,--wrap=_close \
+                  -Wl,--wrap=_isatty -Wl,--wrap=_kill -Wl,--wrap=_lseek \
+                  -Wl,--wrap=_read  -Wl,--wrap=_write -Wl,--wrap=_fstat \
+                  -Wl,--wrap=_getpid
+  LIBC_STUBS   :=
+else
+  # Use the same /tmp GCC 13.3 as LD to avoid Homebrew arm-none-eabi-ld
+  # incompatibility (ARM/Thumb "dangerous relocation" errors).
+  LD           := $(GNU_TC)/bin/arm-none-eabi-gcc
+  # Link with extracted libgcc objects that provide __aeabi_uldivmod etc.
+  # These .o files come from Homebrew arm-none-eabi-gcc's libgcc (v7-m/nofp).
+  _LIBGCC_DIR  := /tmp/libgcc_extract
+  LDFLAGS_SPEC := -nostdlib \
+                  $(_LIBGCC_DIR)/_aeabi_uldivmod.o \
+                  $(_LIBGCC_DIR)/_udivmoddi4.o \
+                  $(_LIBGCC_DIR)/_dvmd_tls.o
+  LIBC_STUBS   := $(COMMON)/libc_stubs.c
+endif
 
 ARCH_FLAGS := -mcpu=cortex-m3 -mthumb
 
@@ -39,19 +65,24 @@ CFLAGS := $(ARCH_FLAGS) \
           -I$(HERE)/ref -I$(HERE)/sc300 \
           $(EXTRA_CFLAGS)
 
+# Test harness always compiled at -O1 regardless of EXTRA_CFLAGS.
+# The harness is too large for literal-pool addressing at -O0, and its
+# optimization level does not affect the crypto measurements.
+HARNESS_CFLAGS := $(ARCH_FLAGS) \
+                  -O1 -std=gnu99 -fno-common \
+                  -DPQM4 -DMPS2_AN385 -DMUPQ_NAMESPACE= \
+                  -I$(MCOMMON) -I$(HERE)/cmsis -I$(COMMON)/mps2 \
+                  -I$(HERE)/ref -I$(HERE)/sc300
+
 # --no-warn-rwx-segments exists only in binutils >= 2.39; detect.
-LD_BIN        := $(shell $(CC) -print-prog-name=ld 2>/dev/null)
+LD_BIN        := $(shell $(LD) -print-prog-name=ld 2>/dev/null)
 LD_RWX_FLAG   := $(shell $(LD_BIN) --help 2>/dev/null | grep -q -- '--no-warn-rwx-segments' && echo '-Wl,--no-warn-rwx-segments')
 
 LDFLAGS := $(ARCH_FLAGS) \
            -nostartfiles \
            -Wl,--defsym=_start=main \
-           --specs=nosys.specs --specs=rdimon.specs \
+           $(LDFLAGS_SPEC) \
            -Wl,--gc-sections $(LD_RWX_FLAG) \
-           -Wl,--wrap=_sbrk  -Wl,--wrap=_open  -Wl,--wrap=_close \
-           -Wl,--wrap=_isatty -Wl,--wrap=_kill -Wl,--wrap=_lseek \
-           -Wl,--wrap=_read  -Wl,--wrap=_write -Wl,--wrap=_fstat \
-           -Wl,--wrap=_getpid \
            -T $(OUT)/ldscript.ld
 
 # ------------------------------------------------------------------ #
@@ -71,7 +102,8 @@ SRCS_C_S8 := \
     $(IMPL_SRCS_FIPS202) \
     $(IMPL_SRCS_RANDOMBYTES) \
     $(IMPL_SRCS_REF_NONSIGN) \
-    $(IMPL_SRCS_SC300_C)
+    $(IMPL_SRCS_SC300_C) \
+    $(LIBC_STUBS)
 
 SRCS_S_S8 := \
     $(IMPL_SRCS_KECCAK_ASM) \
@@ -82,7 +114,7 @@ OBJS_C_S8 := $(addprefix $(OBJ_DIR_S8)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_S8)
 OBJS_S_S8 := $(addprefix $(OBJ_DIR_S8)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_S8))))
 OBJS_S8   := $(OBJS_C_S8) $(OBJS_S_S8)
 
-.PHONY: all build build65 qemu qemu65 size build44 qemu44 build_lib qemu_lib clean \
+.PHONY: all build build65 qemu qemu65 size build44 qemu44 build_kem768 qemu_kem768 build_lib qemu_lib clean \
         build65_gate build44_gate \
         qemu65_quick qemu44_quick \
         build_quick
@@ -96,11 +128,11 @@ $(OBJ_DIR_S8):
 $(OBJ_DIR_S8)/test_mldsa65_main.o: $(HERE)/test/test_mldsa65_main.c \
                                    $(HERE)/test/kat_vectors.h | $(OBJ_DIR_S8)
 	@echo "  CC   $<"
-	$(CC) $(CFLAGS) -I$(HERE)/test -c $< -o $@
+	$(CC) $(HARNESS_CFLAGS) -I$(HERE)/test -c $< -o $@
 $(OBJ_DIR_S8)/kat_data.o: $(HERE)/test/kat_data.c \
                            $(HERE)/test/kat_vectors.h | $(OBJ_DIR_S8)
 	@echo "  CC   $< (ACVP data, may be slow)"
-	$(CC) $(CFLAGS) -I$(HERE)/test -c $< -o $@
+	$(CC) $(HARNESS_CFLAGS) -I$(HERE)/test -c $< -o $@
 $(OBJ_DIR_S8)/hal_m3.o: $(HERE)/test/hal_m3.c | $(OBJ_DIR_S8)
 	@echo "  CC   $<"
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -125,6 +157,10 @@ $(OBJ_DIR_S8)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_S8)
 endef
 $(foreach src,$(IMPL_SRCS_SC300_C),$(eval $(call SC300_C_RULE,$(src))))
 
+$(OBJ_DIR_S8)/libc_stubs.o: $(COMMON)/libc_stubs.c | $(OBJ_DIR_S8)
+	@echo "  CC   $<"
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # ---- assembly rules ----
 $(OBJ_DIR_S8)/keccakf1600.o: $(COMMON)/keccakf1600.S | $(OBJ_DIR_S8)
 	@echo "  AS   $<  (ARMv7-M, no DSP)"
@@ -147,7 +183,7 @@ $(OUT):
 # ---- S8 link ----
 $(OUT)/mldsa65_test.elf: $(OBJS_S8) $(OUT)/ldscript.ld | $(OUT)
 	@echo "  LD   $@"
-	$(LD) $(LDFLAGS) $(OBJS_S8) -lm -o $@
+	$(LD) $(LDFLAGS) $(OBJS_S8) -o $@
 $(OUT)/mldsa65_test.bin: $(OUT)/mldsa65_test.elf
 	@echo "  BIN  $@"
 	$(OBJCOPY) -O binary $< $@
@@ -234,7 +270,7 @@ $(OBJ_DIR_44)/ntt.o: $(HERE)/sc300/ntt.S | $(OBJ_DIR_44)
 
 $(OUT)/mldsa44_test.elf: $(OBJS_44) $(OUT)/ldscript.ld | $(OUT)
 	@echo "  LD   $@"
-	$(LD) $(LDFLAGS) $(OBJS_44) -lm -o $@
+	$(LD) $(LDFLAGS) $(OBJS_44) -o $@
 
 build44: $(OUT)/mldsa44_test.elf
 	@echo ""
@@ -272,7 +308,7 @@ $(OUT)/mldsa65_gate.elf: $(OBJS_65_BASE) \
         $(OUT)/ldscript.ld | $(OUT)
 	@echo "  LD   $@"
 	$(LD) $(LDFLAGS) $(OBJS_65_BASE) \
-	    $(OUT)/obj/test65_gate/test_mldsa65_main.o -lm -o $@
+	    $(OUT)/obj/test65_gate/test_mldsa65_main.o -o $@
 
 build65_gate: $(OUT)/mldsa65_gate.elf
 	@echo "ML-DSA-65 gate ELF ready: $<"
@@ -299,7 +335,7 @@ $(OUT)/mldsa44_gate.elf: $(OBJS_44_BASE) \
         $(OUT)/ldscript.ld | $(OUT)
 	@echo "  LD   $@"
 	$(LD) $(LDFLAGS) $(OBJS_44_BASE) \
-	    $(OUT)/obj/test44_gate/test_mldsa44_main.o -lm -o $@
+	    $(OUT)/obj/test44_gate/test_mldsa44_main.o -o $@
 
 build44_gate: $(OUT)/mldsa44_gate.elf
 	@echo "ML-DSA-44 gate ELF ready: $<"
@@ -357,7 +393,7 @@ FORCE:
 
 $(OUT)/mldsa65_test_via_lib.elf: $(TEST_LIB_OBJS) $(LIB_DEBUG) $(OUT)/ldscript.ld | $(OUT)
 	@echo "  LD   $@  (test + debug library)"
-	$(LD) $(LDFLAGS) -Wl,--no-warn-mismatch $(TEST_LIB_OBJS) $(LIB_DEBUG) -lm -o $@
+	$(LD) $(LDFLAGS) -Wl,--no-warn-mismatch $(TEST_LIB_OBJS) $(LIB_DEBUG) -o $@
 
 build_lib: $(OUT)/mldsa65_test_via_lib.elf
 	@echo ""
@@ -366,6 +402,87 @@ build_lib: $(OUT)/mldsa65_test_via_lib.elf
 
 qemu_lib: $(OUT)/mldsa65_test_via_lib.elf
 	@echo "Running via-library QEMU test (debug lib, public API only)..."
+	$(QEMU) -M mps2-an385 -nographic -semihosting -kernel $<
+
+# ------------------------------------------------------------------ #
+# ML-KEM-768 QEMU test target (Phase A: clean reference only)         #
+# ------------------------------------------------------------------ #
+OBJ_DIR_KEM768 := $(OUT)/obj/test_kem768
+
+SRCS_C_KEM768 := \
+    $(HERE)/test/test_mlkem768_main.c \
+    $(HERE)/test/hal_m3.c \
+    $(IMPL_SRCS_FIPS202) \
+    $(IMPL_SRCS_RANDOMBYTES) \
+    $(IMPL_SRCS_REF_KEM768) \
+    $(HERE)/api_wrapper_kem.c \
+    $(LIBC_STUBS)
+
+SRCS_S_KEM768 := \
+    $(IMPL_SRCS_KECCAK_ASM) \
+    $(IMPL_SRCS_MPS2_STARTUP_S)
+
+OBJS_C_KEM768 := $(addprefix $(OBJ_DIR_KEM768)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_KEM768))))
+OBJS_S_KEM768 := $(addprefix $(OBJ_DIR_KEM768)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_KEM768))))
+OBJS_KEM768   := $(OBJS_C_KEM768) $(OBJS_S_KEM768)
+
+$(OBJ_DIR_KEM768):
+	mkdir -p $(OBJ_DIR_KEM768)
+
+KEM768_CFLAGS := $(ARCH_FLAGS) \
+                 -O2 -std=gnu99 -Wall -Wextra -fno-common \
+                 -DPQM4 -DMPS2_AN385 -DMUPQ_NAMESPACE= \
+                 -I$(MCOMMON) -I$(HERE)/cmsis -I$(COMMON)/mps2 \
+                 -I$(HERE)/ref_kem -I$(HERE)/test \
+                 -I$(HERE)/sc300 \
+                 $(EXTRA_CFLAGS)
+
+$(OBJ_DIR_KEM768)/test_mlkem768_main.o: $(HERE)/test/test_mlkem768_main.c | $(OBJ_DIR_KEM768)
+	@echo "  CCKEM $<"
+	$(CC) $(HARNESS_CFLAGS) -I$(HERE)/ref_kem -I$(HERE)/test -c $< -o $@
+$(OBJ_DIR_KEM768)/hal_m3.o: $(HERE)/test/hal_m3.c | $(OBJ_DIR_KEM768)
+	@echo "  CCKEM $<"
+	$(CC) $(KEM768_CFLAGS) -c $< -o $@
+$(OBJ_DIR_KEM768)/fips202.o: $(MCOMMON)/fips202.c | $(OBJ_DIR_KEM768)
+	@echo "  CCKEM $<"
+	$(CC) $(KEM768_CFLAGS) -c $< -o $@
+$(OBJ_DIR_KEM768)/randombytes.o: $(COMMON)/randombytes.c | $(OBJ_DIR_KEM768)
+	@echo "  CCKEM $<"
+	$(CC) $(KEM768_CFLAGS) -I$(COMMON) -c $< -o $@
+
+define KEM768_REF_RULE
+$(OBJ_DIR_KEM768)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_KEM768)
+	@echo "  CCKEM $$<"
+	$(CC) $(KEM768_CFLAGS) -c $$< -o $$@
+endef
+$(foreach src,$(IMPL_SRCS_REF_KEM768),$(eval $(call KEM768_REF_RULE,$(src))))
+
+# api_wrapper_kem.c — caller-facing wrapper, includes "cm_integrity.h"
+$(OBJ_DIR_KEM768)/api_wrapper_kem.o: $(HERE)/api_wrapper_kem.c | $(OBJ_DIR_KEM768)
+	@echo "  CCKEM $<"
+	$(CC) $(KEM768_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR_KEM768)/keccakf1600.o: $(COMMON)/keccakf1600.S | $(OBJ_DIR_KEM768)
+	@echo "  ASKEM $<"
+	$(CC) $(KEM768_CFLAGS) -c $< -o $@
+$(OBJ_DIR_KEM768)/startup_MPS2.o: $(COMMON)/mps2/startup_MPS2.S | $(OBJ_DIR_KEM768)
+	@echo "  ASKEM $<"
+	$(CC) $(KEM768_CFLAGS) -DDATA_IN_FLASH -I$(COMMON)/mps2 -c $< -o $@
+$(OBJ_DIR_KEM768)/libc_stubs.o: $(COMMON)/libc_stubs.c | $(OBJ_DIR_KEM768)
+	@echo "  CCKEM $<"
+	$(CC) $(KEM768_CFLAGS) -c $< -o $@
+
+$(OUT)/mlkem768_test.elf: $(OBJS_KEM768) $(OUT)/ldscript.ld | $(OUT)
+	@echo "  LD   $@"
+	$(LD) $(LDFLAGS) $(OBJS_KEM768) -o $@
+
+build_kem768: $(OUT)/mlkem768_test.elf
+	@echo ""
+	@echo "ML-KEM-768 QEMU test build OK  ->  $(OUT)/mlkem768_test.elf"
+	@echo "Run: make -f Makefile.gcc qemu_kem768"
+
+qemu_kem768: $(OUT)/mlkem768_test.elf
+	@echo "Running ML-KEM-768 on QEMU mps2-an385..."
 	$(QEMU) -M mps2-an385 -nographic -semihosting -kernel $<
 
 # ------------------------------------------------------------------ #

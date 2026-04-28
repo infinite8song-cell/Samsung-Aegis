@@ -288,6 +288,51 @@ action_qemu_full() {
     pause
 }
 
+# ------------------------------------------------------------------ #
+# ML-KEM-768 QEMU verify (deterministic ACVP-style KAT, 3 vectors)     #
+# ------------------------------------------------------------------ #
+action_qemu_kem768() {
+    local mk elf tc_label
+    local -a make_args
+    if [ "$HOST_ROLE" = delivery ]; then
+        mk=Makefile.armclang
+        elf="$OUT_DIR/mlkem768_test_armclang.elf"
+        make_args=(ARMCLANG="$ARMCLANG" ARMAR="$ARMAR" QEMU="$QEMU")
+        tc_label="armclang"
+        if ! check_armclang; then err "ARMCLANG missing: $ARMCLANG"; pause; return; fi
+    else
+        mk=Makefile.gcc
+        elf="$OUT_DIR/mlkem768_test.elf"
+        make_args=(GNU_TC="$GNU_TC" QEMU="$QEMU")
+        tc_label="gcc"
+        if ! check_gnu_tc; then err "GNU_TC missing: $GNU_TC"; pause; return; fi
+    fi
+
+    title "ML-KEM-768: KAT ($tc_label)"
+    hr
+    if ! check_qemu; then err "QEMU missing: $QEMU"; pause; return; fi
+
+    ok "Building ML-KEM-768 ELF ($tc_label)..."
+    (cd "$IMPL_DIR" && make -B -f $mk build_kem768 "${make_args[@]}" -s) \
+        || { err "Build failed."; pause; return; }
+
+    echo
+    ok "Running QEMU (ML-KEM-768)..."
+    mkdir -p "$OUT_DIR/log"
+    local log="$OUT_DIR/log/mlkem768_${tc_label}_$(date +%Y%m%d_%H%M%S).log"
+    "$QEMU" -M mps2-an385 -nographic -semihosting -kernel "$elf" 2>&1 | tee "$log"
+
+    echo
+    if grep -q 'FAIL' "$log"; then
+        err "ML-KEM-768 KAT: FAIL — check $log"
+    elif grep -q 'KAT-GATE: PASS' "$log"; then
+        ok "ML-KEM-768 KAT: PASS"
+    else
+        err "ML-KEM-768 KAT: unexpected output — check $log"
+    fi
+    pause
+}
+
 action_perf_report() {
     local mk elf65 elf44 tc_label
     local -a make_args
@@ -543,6 +588,57 @@ action_perf_report() {
     ' /dev/null
 
     rm -rf "$tmpdir"
+
+    # ── ML-KEM-768 cycle/stack measurement ─────────────────────────
+    hr
+    ok "Measuring ML-KEM-768 ($tc_label) ..."
+    local log_kem elf_kem
+    if [ "$HOST_ROLE" = delivery ]; then
+        elf_kem="$OUT_DIR/mlkem768_test_armclang.elf"
+    else
+        elf_kem="$OUT_DIR/mlkem768_test.elf"
+    fi
+    (cd "$IMPL_DIR" && make -B -f $mk build_kem768 "${make_args[@]}" -s >/dev/null 2>&1) \
+        && {
+            log_kem="$OUT_DIR/log/perfkem768_${tc_label}_${ts}.log"
+            "$QEMU" -M mps2-an385 -nographic -semihosting -kernel "$elf_kem" >"$log_kem" 2>&1
+            echo
+            awk -v f="$log_kem" '
+            function estms(cyc,   v,s,r) {
+                if (cyc+0 == 0) return "-"
+                v = int(cyc * 75 / 70000 + 0.5); s = sprintf("%d", v); r = ""
+                while (length(s) > 3) { r = "," substr(s, length(s)-2) r; s = substr(s, 1, length(s)-3) }
+                return s r " ms"
+            }
+            function comma(n,   s,r) {
+                n = int(n); if (n == 0) return "-"; s = sprintf("%d", n); r = ""
+                while (length(s) > 3) { r = "," substr(s, length(s)-2) r; s = substr(s, 1, length(s)-3) }
+                return s r
+            }
+            {
+                if (match($0, /^MLKEM768,(stack|cycles),(keypair|encaps|decaps):$/)) {
+                    tag = $0
+                    getline v
+                    d[tag] = v + 0
+                }
+            }
+            END {
+                SEP = "  ────────────────────────────────────────────────────────────────"
+                printf "  ML-KEM-768 (%s)\n", "'"$tc_label"'"
+                print SEP
+                printf "  %-10s %12s %12s %12s\n", "Operation", "cycles", "est ms", "stack"
+                print SEP
+                split("keypair encaps decaps", ops, " ")
+                for (i = 1; i <= 3; i++) {
+                    op = ops[i]
+                    ck = "MLKEM768,cycles," op ":"
+                    sk = "MLKEM768,stack," op ":"
+                    printf "  %-10s %12s %12s %12s\n", op, comma(d[ck]), estms(d[ck]), comma(d[sk])
+                }
+                print SEP
+            }' "$log_kem"
+        } || warn "ML-KEM-768 build/run failed — skipped"
+
     pause
 }
 
@@ -841,26 +937,28 @@ dev_menu() {
         printf ' host : %s (%s)\n' "$HOST_TAG" "$HOST_ROLE"
         printf ' impl : %s\n' "$IMPL_DIR"
         hr
-        echo " 1) QEMU verify        (115-case ACVP KAT, ~1s)  ★"
-        echo " 2) Cycle/stack report (keypair/sign/verify, 44+65)"
-        echo " 3) QEMU test (gcc, direct-object build, full sequential)"
-        echo " 4) QEMU test (gcc, LINKED against debug lib)"
-        echo " 5) QEMU test (armclang build)"
-        echo " 6) Build all 4 library configs (sanity)"
-        echo " 7) Clean everything"
-        echo " 8) Show detected env"
+        echo " 1) QEMU verify        ML-DSA (44+65 ACVP KAT, ~1s) ★"
+        echo " 2) QEMU verify        ML-KEM-768 (KAT, 3 vectors)"
+        echo " 3) Cycle/stack report (DSA + KEM)"
+        echo " 4) QEMU test (gcc, direct-object build, full sequential)"
+        echo " 5) QEMU test (gcc, LINKED against debug lib)"
+        echo " 6) QEMU test (armclang build)"
+        echo " 7) Build all 4 library configs (sanity)"
+        echo " 8) Clean everything"
+        echo " 9) Show detected env"
         echo " q) Quit"
         hr
         read -rp "Select: " c
         case "$c" in
             1) action_qemu_full ;;
-            2) action_perf_report ;;
-            3) action_qemu_test ;;
-            4) action_qemu_lib ;;
-            5) action_qemu_armclang ;;
-            6) action_lib_matrix ;;
-            7) action_clean ;;
-            8) action_env ;;
+            2) action_qemu_kem768 ;;
+            3) action_perf_report ;;
+            4) action_qemu_test ;;
+            5) action_qemu_lib ;;
+            6) action_qemu_armclang ;;
+            7) action_lib_matrix ;;
+            8) action_clean ;;
+            9) action_env ;;
             q|Q) exit 0 ;;
         esac
     done
@@ -879,13 +977,14 @@ delivery_menu() {
         echo "  2) Build library  (armclang, custom ABI knobs)"
         echo "  3) Build library  (GCC sanity)"
         echo "  4) Build all 4 library configs (matrix)"
-        echo "  5) QEMU verify        (115-case ACVP KAT, ~1s) ★"
-        echo "  6) Cycle/stack report (keypair/sign/verify, 44+65)"
+        echo "  5) QEMU verify    ML-DSA (44+65 ACVP KAT) ★"
+        echo "  6) QEMU verify    ML-KEM-768 (KAT, 3 vectors)"
+        echo "  7) Cycle/stack report (DSA + KEM)"
         echo
         echo " [Mac 개발용 (Ubuntu에서도 동작)]"
-        echo "  7) QEMU via-library test (links debug .a)"
-        echo "  8) QEMU test   (gcc direct-object build)"
-        echo "  9) QEMU test   (armclang build)"
+        echo "  8) QEMU via-library test (links debug .a)"
+        echo "  9) QEMU test   (gcc direct-object build)"
+        echo "  a) QEMU test   (armclang build)"
         echo
         echo "  c) Clean everything"
         echo "  e) Show detected env"
@@ -898,10 +997,11 @@ delivery_menu() {
             3) action_lib_gcc ;;
             4) action_lib_matrix ;;
             5) action_qemu_full ;;
-            6) action_perf_report ;;
-            7) action_qemu_lib ;;
-            8) action_qemu_test ;;
-            9) action_qemu_armclang ;;
+            6) action_qemu_kem768 ;;
+            7) action_perf_report ;;
+            8) action_qemu_lib ;;
+            9) action_qemu_test ;;
+            a|A) action_qemu_armclang ;;
             c|C) action_clean ;;
             e|E) action_env ;;
             q|Q) exit 0 ;;

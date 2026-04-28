@@ -123,15 +123,20 @@ OBJ_BASE := $(OUT)/obj/gcclib_$(ENDIAN_TAG)_$(ENUM_TAG)$(WCHAR_TAG)$(OPT_TAG)$(B
 OBJ_65  := $(OBJ_BASE)/m65
 OBJ_44  := $(OBJ_BASE)/m44
 OBJ_COM := $(OBJ_BASE)/common
+OBJ_KEM := $(OBJ_BASE)/kem768
 LIB     := $(OUT)/libmldsa_sc300_$(TAG).lib
 
-OBJS_65_C := $(addprefix $(OBJ_65)/,$(notdir $(patsubst %.c,%.o,$(SRCS_MODE_C))))
-OBJS_65_S := $(addprefix $(OBJ_65)/,$(notdir $(patsubst %.S,%.o,$(SRCS_MODE_S))))
-OBJS_44_C := $(addprefix $(OBJ_44)/,$(notdir $(patsubst %.c,%.o,$(SRCS_MODE_C))))
+# ML-KEM-768 uses ref_kem/ include path (not ref/) + -DMLKEM_NO_RANDOMBYTES
+CFLAGS_KEM := $(CFLAGS_BASE) -I$(HERE)/ref_kem -DMLKEM_NO_RANDOMBYTES
+
+OBJS_65_C  := $(addprefix $(OBJ_65)/,$(notdir $(patsubst %.c,%.o,$(SRCS_MODE_C))))
+OBJS_65_S  := $(addprefix $(OBJ_65)/,$(notdir $(patsubst %.S,%.o,$(SRCS_MODE_S))))
+OBJS_44_C  := $(addprefix $(OBJ_44)/,$(notdir $(patsubst %.c,%.o,$(SRCS_MODE_C))))
 OBJS_COM_C := $(addprefix $(OBJ_COM)/,$(notdir $(patsubst %.c,%.o,$(SRCS_COMMON_C))))
 OBJS_COM_S := $(addprefix $(OBJ_COM)/,$(notdir $(patsubst %.S,%.o,$(SRCS_COMMON_S))))
+OBJS_KEM_C := $(addprefix $(OBJ_KEM)/,$(notdir $(patsubst %.c,%.o,$(IMPL_SRCS_LIB_KEM768_C))))
 
-OBJS := $(OBJS_65_C) $(OBJS_65_S) $(OBJS_44_C) $(OBJS_COM_C) $(OBJS_COM_S)
+OBJS := $(OBJS_65_C) $(OBJS_65_S) $(OBJS_44_C) $(OBJS_COM_C) $(OBJS_COM_S) $(OBJS_KEM_C)
 
 .PHONY: all lib clean clean-all info
 
@@ -144,7 +149,7 @@ info:
 	@echo "BE=$(BE) ENUM=$(ENUM) BUILD=$(BUILD)"
 	@echo "CFLAGS_BASE=$(CFLAGS_BASE)"
 
-$(OBJ_65) $(OBJ_44) $(OBJ_COM):
+$(OBJ_65) $(OBJ_44) $(OBJ_COM) $(OBJ_KEM):
 	mkdir -p $@
 
 # ---- ML-DSA-65 mode-specific C rules ----
@@ -183,6 +188,14 @@ $(OBJ_COM)/$(notdir $(patsubst %.S,%.o,$(1))): $(1) | $(OBJ_COM)
 	$(CC) $(CFLAGS) -c $$< -o $$@
 endef
 $(foreach src,$(SRCS_COMMON_S),$(eval $(call AS_COM_RULE,$(src))))
+
+# ---- ML-KEM-768 C rules (ref_kem/ + api_wrapper_kem.c) ----
+define CC_KEM_RULE
+$(OBJ_KEM)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_KEM)
+	@echo "  CCKEM $$<"
+	$(CC) $(CFLAGS_KEM) -c $$< -o $$@
+endef
+$(foreach src,$(IMPL_SRCS_LIB_KEM768_C),$(eval $(call CC_KEM_RULE,$(src))))
 
 $(LIB): $(OBJS)
 	@echo "  AR   $@"
