@@ -21,11 +21,18 @@ OUT     := $(HERE)/output
 # ------------------------------------------------------------------ #
 # Compiler flags (armclang)
 # ------------------------------------------------------------------ #
+# Default opt level for ML-DSA-65: -O3 on non-CM, non-masked source.
+# CFLAGS_CM_OVERRIDE clamps CM/masked TUs back to -O2 (later -O wins) so the
+# masking countermeasures keep their hand-checked constant-time properties
+# without exposing them to the more aggressive transforms (-O3 inlining,
+# loop unrolling, conditional-move generation) that can disturb timing.
+# ML-DSA-44 build (CFLAGS_44) and ML-KEM-768 build (CFLAGS_KEM768) keep
+# their original -O2 to bound the regression surface to ML-DSA-65 only.
 CFLAGS := \
     --target=arm-arm-none-eabi \
     -mcpu=cortex-m3 \
     -mthumb \
-    -O2 \
+    -O3 \
     -std=gnu99 \
     -Wall \
     -Wextra \
@@ -39,6 +46,8 @@ CFLAGS := \
     -I$(HERE)/cmsis \
     -I$(COMMON)/mps2 \
     $(EXTRA_CFLAGS)
+
+CFLAGS_CM_OVERRIDE := -O2
 
 # ------------------------------------------------------------------ #
 # Linker flags (armlink)
@@ -162,10 +171,13 @@ $(OBJ_DIR_S8_AC)/sign.o: $(HERE)/sc300/sign.c | $(OBJ_DIR_S8_AC)
 	$(ARMCLANG) $(CFLAGS) -c $< -o $@
 
 # Masked SCA kernels — compile as empty TUs unless -DMLDSA_MASK_* is set.
+# These translation units carry the masking countermeasures and are clamped
+# to -O2 via CFLAGS_CM_OVERRIDE (later -O wins) so the more aggressive -O3
+# transforms don't disturb the hand-validated constant-time properties.
 define CC_MASKED_RULE_S8
 $(OBJ_DIR_S8_AC)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_DIR_S8_AC)
-	@echo "  CC   $$<"
-	$(ARMCLANG) $(CFLAGS) -c $$< -o $$@
+	@echo "  CCcm $$<  (CM/masked TU, clamped to $(CFLAGS_CM_OVERRIDE))"
+	$(ARMCLANG) $(CFLAGS) $(CFLAGS_CM_OVERRIDE) -c $$< -o $$@
 endef
 MASKED_SRCS_S8 := \
     $(HERE)/sc300/masked_random.c \
@@ -217,7 +229,10 @@ $(OUT)/mldsa65_test_armclang.bin: $(OUT)/mldsa65_test_armclang.elf
 # ML-DSA-44 variant (separate obj dir, -DMLDSA_MODE=44 everywhere)
 # ------------------------------------------------------------------ #
 OBJ_DIR_44_AC := $(OUT)/obj/test44_armclang
-CFLAGS_44 := $(CFLAGS) -DMLDSA_MODE=44 -I$(HERE)/test
+# ML-DSA-44 keeps the original -O2 (later -O wins) — bumping ML-DSA-44 to
+# -O3 is out of scope for the current optimization request, which targets
+# ML-DSA-65 only.
+CFLAGS_44 := $(CFLAGS) -O2 -DMLDSA_MODE=44 -I$(HERE)/test
 
 SRCS_C_44 := \
     $(HERE)/test/test_mldsa44_main.c \

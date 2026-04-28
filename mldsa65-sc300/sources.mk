@@ -61,9 +61,13 @@ IMPL_SRCS_REF_NTT_UNUSED  := $(HERE)/ref/ntt.c
 # ------------------------------------------------------------------ #
 # sc300 custom                                                         #
 # ------------------------------------------------------------------ #
-# Streaming sign + masked kernels  (DSA-side; CM 모듈은 IMPL_SRCS_CM_C)
-IMPL_SRCS_SC300_C := \
-    $(HERE)/sc300/sign.c \
+# Streaming-sign core (no masking; safe to compile at higher -O level).
+IMPL_SRCS_SC300_C_PERF := \
+    $(HERE)/sc300/sign.c
+
+# Masked SCA kernels (split out from SC300_C so the build system can
+# clamp them back to -O2 when the rest of ML-DSA is bumped to -O3).
+IMPL_SRCS_SC300_C_MASKED := \
     $(HERE)/sc300/masked_random.c \
     $(HERE)/sc300/masked_keccak_core.c \
     $(HERE)/sc300/masked_rhoprime.c \
@@ -71,8 +75,18 @@ IMPL_SRCS_SC300_C := \
     $(HERE)/sc300/masked_cs2_ct0.c \
     $(HERE)/sc300/masked_y_sample.c \
     $(HERE)/sc300/masked_chknorm.c \
-    $(HERE)/sc300/masked_ba.c \
-    $(IMPL_SRCS_CM_C)
+    $(HERE)/sc300/masked_ba.c
+
+# CM-policy sources are also -O2-clamped (same SCA-timing concern).
+IMPL_SRCS_SC300_C_CM := $(IMPL_SRCS_CM_C)
+
+# Aggregate set used by the QEMU test builds — full collection, identical
+# to before this split; the per-rule logic in each Makefile decides which
+# sub-bucket gets the -O2 clamp.
+IMPL_SRCS_SC300_C := \
+    $(IMPL_SRCS_SC300_C_PERF) \
+    $(IMPL_SRCS_SC300_C_MASKED) \
+    $(IMPL_SRCS_SC300_C_CM)
 
 # Hand-tuned ARMv7-M NTT + Dilithium scalar kernels (endian-safe; always
 # included).  dilithium_kernels.S provides ARMv7-M-only pointwise_montgomery /

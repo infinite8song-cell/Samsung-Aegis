@@ -20,6 +20,16 @@ extern void MLDSA_NAMESPACE(poly_caddq_asm)(int32_t *a);
 extern void MLDSA_NAMESPACE(poly_pointwise_montgomery_asm)(int32_t *c,
                                                             const int32_t *a,
                                                             const int32_t *b);
+extern void MLDSA_NAMESPACE(poly_add_asm)(int32_t *c,
+                                          const int32_t *a,
+                                          const int32_t *b);
+extern void MLDSA_NAMESPACE(poly_sub_asm)(int32_t *c,
+                                          const int32_t *a,
+                                          const int32_t *b);
+extern unsigned int MLDSA_NAMESPACE(rej_uniform_asm)(int32_t *a,
+                                                     unsigned int len,
+                                                     const uint8_t *buf,
+                                                     unsigned int buflen);
 #endif
 
 /*************************************************
@@ -74,13 +84,15 @@ void MLDSA_NAMESPACE(poly_caddq)(poly *a) {
 *              - const poly *b: pointer to second summand
 **************************************************/
 void MLDSA_NAMESPACE(poly_add)(poly *c, const poly *a, const poly *b)  {
-    unsigned int i;
     DBENCH_START();
-
+#ifdef MLDSA_SC300_ASM
+    MLDSA_NAMESPACE(poly_add_asm)(c->coeffs, a->coeffs, b->coeffs);
+#else
+    unsigned int i;
     for (i = 0; i < N; ++i) {
         c->coeffs[i] = a->coeffs[i] + b->coeffs[i];
     }
-
+#endif
     DBENCH_STOP(*tadd);
 }
 
@@ -96,13 +108,15 @@ void MLDSA_NAMESPACE(poly_add)(poly *c, const poly *a, const poly *b)  {
 *                               subtraced from first input polynomial
 **************************************************/
 void MLDSA_NAMESPACE(poly_sub)(poly *c, const poly *a, const poly *b) {
-    unsigned int i;
     DBENCH_START();
-
+#ifdef MLDSA_SC300_ASM
+    MLDSA_NAMESPACE(poly_sub_asm)(c->coeffs, a->coeffs, b->coeffs);
+#else
+    unsigned int i;
     for (i = 0; i < N; ++i) {
         c->coeffs[i] = a->coeffs[i] - b->coeffs[i];
     }
-
+#endif
     DBENCH_STOP(*tadd);
 }
 
@@ -331,9 +345,14 @@ static unsigned int rej_uniform(int32_t *a,
                                 unsigned int len,
                                 const uint8_t *buf,
                                 unsigned int buflen) {
+    DBENCH_START();
+#ifdef MLDSA_SC300_ASM
+    unsigned int ctr = MLDSA_NAMESPACE(rej_uniform_asm)(a, len, buf, buflen);
+    DBENCH_STOP(*tsample);
+    return ctr;
+#else
     unsigned int ctr, pos;
     uint32_t t;
-    DBENCH_START();
 
     ctr = pos = 0;
     while (ctr < len && pos + 3 <= buflen) {
@@ -349,6 +368,7 @@ static unsigned int rej_uniform(int32_t *a,
 
     DBENCH_STOP(*tsample);
     return ctr;
+#endif
 }
 
 /*************************************************

@@ -33,8 +33,51 @@
 
 **C 측 라우팅 (-DMLDSA_SC300_ASM):**
 
-- `ref/poly.c` 의 `MLDSA_NAMESPACE(poly_reduce)`, `_poly_caddq`, `_poly_pointwise_montgomery` 는 `MLDSA_SC300_ASM` 정의 시 1-라인 어셈블리 호출로 분기 (`#ifdef`) — 미정의 시 기존 reference C 루프로 fallback. 4 종 Makefile (`Makefile.gcc{,.lib}`, `Makefile.armclang{,.lib}`) 의 `CFLAGS` 모두 `-DMLDSA_SC300_ASM` 추가됨.
+- `ref/poly.c` 의 `MLDSA_NAMESPACE(poly_reduce)`, `_poly_caddq`, `_poly_pointwise_montgomery`, `_poly_add`, `_poly_sub`, 정적 `rej_uniform` 은 `MLDSA_SC300_ASM` 정의 시 1-라인 어셈블리 호출로 분기 (`#ifdef`) — 미정의 시 기존 reference C 루프로 fallback. 4 종 Makefile (`Makefile.gcc{,.lib}`, `Makefile.armclang{,.lib}`) 의 `CFLAGS` 모두 `-DMLDSA_SC300_ASM` 추가됨.
 - ML-KEM 측은 `sc300_kem/ntt.c` 의 `PQCLEAN_MLKEM768_CLEAN_ntt` / `_invntt` 가 `ntt_fast_m3` / `invntt_fast_m3` 를 직접 extern-call → toggle flag 불필요 (어셈블리 경로가 항상 활성).
+
+### 1.4 ML-DSA-65 -O3 + ldm/stm 추가 최적화 (이번 단계)
+
+`Makefile.armclang` (테스트 ELF) 와 `Makefile.armclang.lib` (배포 라이브러리) 양쪽 모두에서 ML-DSA-65 빌드만 선택적으로 `-O3` 로 상향. ML-DSA-44 빌드 (`CFLAGS_44`/`CFLAGS44`) 와 ML-KEM-768 빌드 (`CFLAGS_KEM768`) 는 `-O2` 유지 — 회귀 표면 축소 + 사용자 요청 범위 (ML-DSA-65 only) 준수.
+
+**CM/masked TU 보호:** `cm_*.c`, `masked_*.c` 는 별도 컴파일 룰에 `CFLAGS_CM_OVERRIDE = -O2` 를 끝에 추가해 `-O3` 다음에 `-O2` 가 와서 효과적으로 `-O2` 로 재-clamp 된다 (armclang/clang 모두 LATER -O 가 우선). SCA 타이밍에 영향을 줄 수 있는 `-O3` 변환 (조건부-mov 생성, 어그레시브 unrolling, branchless 분기 변환) 이 마스킹된 정수-시간 코드에 적용되지 않도록 격리.
+
+**Build-rule 분리:** `sources.mk` 에 `IMPL_SRCS_SC300_C_PERF` (= `sc300/sign.c`) / `IMPL_SRCS_SC300_C_MASKED` (= 8x masked_*) / `IMPL_SRCS_SC300_C_CM` (= 5x cm_*) 세 버킷으로 분할. `Makefile.armclang.lib` 의 `CC65_RULE` (perf, -O3) 와 `CC65_CM_RULE` (CM/masked, -O2 clamp) 가 각각 해당 버킷을 처리.
+
+**asm 추가:**
+
+| 함수 | 추가 위치 | 변경/신규 | 효과 |
+|---|---|---|---|
+| `poly_reduce_asm` | `sc300/dilithium_kernels.S` | 8x ldr/str → ldmia/stmia | ~14 cyc/iter × 32 iter = **~448 cyc 절감/poly_reduce** |
+| `poly_caddq_asm` | 동일 | 동일 패턴 | 동일 효과 |
+| `poly_pointwise_montgomery_asm` | 동일 | 3x ldr → ldmia (a, b 각 1회) | ~2 cyc/iter × 85 iter = ~170 cyc 절감/pointwise |
+| `poly_add_asm` (신규) | 동일 | ldmia 8 + (ldmia 2 + add×2)×4 + stmia 8 | C 대비 ~25% 추정 |
+| `poly_sub_asm` (신규) | 동일 | 동일 구조 | 동일 |
+| `rej_uniform_asm` (신규) | 동일 | pqm3 vector.s 포팅 (ubfx 기반 23-bit mask, conditional store via `it le`) | matrix expand 핫패스에서 ~2x |
+
+`ref/poly.c` 의 해당 함수는 `#ifdef MLDSA_SC300_ASM` 블록에서 한 줄 어셈블리 호출로 분기. fallback C 코드 보존.
+
+### 1.5 Stack budget 검증 (11 KB)
+
+이 환경에는 ARMClang/QEMU 가 없어 직접 측정 불가. 정적 추정:
+
+| 항목 | 변화 | 비고 |
+|---|---|---|
+| `-O3` 인라인 영향 | -200 ~ +1024 byte | `polyvecl_pointwise_acc_montgomery` 의 `poly t` 지역(1 KB) 이 `crypto_sign` 으로 인라인되면 caller frame 에 포함될 수 있음. 단 컴파일러는 동일 함수의 다중 인라인에 대해 stack-storage 재사용 (live-range analysis) 하므로 K=6 회 호출 시에도 +1 KB 이내. |
+| 신규 asm push frame | +0 ~ 36 byte | 모든 신규 asm 은 `push {r4-r11, lr}` 또는 `push {r4-r10}` (≤ 36 byte) 만 사용. asm 함수는 extern → 인라인되지 않음, 자체 frame 이 caller 에 누적되지 않음. |
+| CM/masked TU | 0 byte | -O2 유지로 변동 없음. |
+
+**기대 결과:** `crypto_sign` peak ≈ 6 KB (현재) + 최대 1 KB 인라인 영향 = 7 KB 수준 → 11 KB 한도에 4 KB 안전 여유.
+
+**검증 권장:** 사용자 환경에서 다음 명령으로 함수별 stack 사용량 리포트 생성
+
+```bash
+make -f Makefile.armclang clean build EXTRA_CFLAGS="-fstack-usage"
+# 빌드 후 output/obj/test_armclang/*.su 파일에 함수별 frame size 기록됨
+sort -k2 -n -r output/obj/test_armclang/*.su | head -20
+```
+
+`crypto_sign` / `crypto_sign_signature` / `pack_sk_in_place` 같은 핵심 항목이 ≤ 8 KB (호출 체인 마진 3 KB 가정) 이면 11 KB 예산 통과.
 
 ### 1.2 C 최적화 현황
 

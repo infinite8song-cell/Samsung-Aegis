@@ -168,9 +168,15 @@ CFLAGS_BASE := \
     $(MASK_CFLAGS) \
     $(EXTRA_CFLAGS)
 
-CFLAGS65 := $(CFLAGS_BASE) -DMLDSA_MODE=65
+# ML-DSA-65 builds at -O3 by default (per user request).  -O3 follows the
+# default OPT and overrides it (later -O wins in armclang).  ML-DSA-44 keeps
+# the OPT default (-O2) to bound the regression surface.  CFLAGS_CM_OVERRIDE
+# clamps CM/masked TUs back to -O2 even on the m65 path.
+CFLAGS65 := $(CFLAGS_BASE) -DMLDSA_MODE=65 -O3
 CFLAGS44 := $(CFLAGS_BASE) -DMLDSA_MODE=44
 CFLAGS   := $(CFLAGS_BASE)   # for mode-independent files
+
+CFLAGS_CM_OVERRIDE := -O2
 
 # ------------------------------------------------------------------ #
 # Sources (shared definitions)                                        #
@@ -247,12 +253,25 @@ $(OBJ_65) $(OBJ_44) $(OBJ_COM) $(OBJ_KEM):
 	mkdir -p $@
 
 # ---- ML-DSA-65 mode-specific C rules ----
+# Split into two buckets so CM/masked TUs stay at -O2 while the rest gets
+# the -O3 from CFLAGS65 (set above).  CM_SRCS = masked_*.c + cm_*.c.
+SRCS_MODE_C_CM     := $(IMPL_SRCS_SC300_C_MASKED) $(IMPL_SRCS_SC300_C_CM)
+SRCS_MODE_C_NON_CM := $(filter-out $(SRCS_MODE_C_CM),$(SRCS_MODE_C))
+
 define CC65_RULE
 $(OBJ_65)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_65)
 	@echo "  CC65 $$<"
 	$(ARMCLANG) $(CFLAGS65) -c $$< -o $$@
 endef
-$(foreach src,$(SRCS_MODE_C),$(eval $(call CC65_RULE,$(src))))
+$(foreach src,$(SRCS_MODE_C_NON_CM),$(eval $(call CC65_RULE,$(src))))
+
+# Same rule structure but with CFLAGS_CM_OVERRIDE appended to clamp -O2.
+define CC65_CM_RULE
+$(OBJ_65)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_65)
+	@echo "  CC65cm $$<  (clamped to $(CFLAGS_CM_OVERRIDE))"
+	$(ARMCLANG) $(CFLAGS65) $(CFLAGS_CM_OVERRIDE) -c $$< -o $$@
+endef
+$(foreach src,$(SRCS_MODE_C_CM),$(eval $(call CC65_CM_RULE,$(src))))
 
 # ---- ML-DSA-44 mode-specific C rules ----
 define CC44_RULE
