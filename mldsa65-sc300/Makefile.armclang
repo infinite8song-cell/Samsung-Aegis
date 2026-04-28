@@ -33,6 +33,7 @@ CFLAGS := \
     -DPQM4 \
     -DMPS2_AN385 \
     -DDATA_IN_FLASH \
+    -DMLDSA_SC300_ASM \
     -I$(HERE)/ref \
     -I$(MCOMMON) \
     -I$(HERE)/cmsis \
@@ -90,7 +91,8 @@ SRCS_C_S8 := \
 SRCS_S_S8 := \
     $(COMMON)/keccakf1600.S \
     $(COMMON)/mps2/startup_MPS2.S \
-    $(HERE)/sc300/ntt.S
+    $(HERE)/sc300/ntt.S \
+    $(HERE)/sc300/dilithium_kernels.S
 
 OBJS_C_S8 := $(addprefix $(OBJ_DIR_S8_AC)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_S8))))
 OBJS_S_S8 := $(addprefix $(OBJ_DIR_S8_AC)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_S8))))
@@ -196,6 +198,10 @@ $(OBJ_DIR_S8_AC)/ntt.o: $(HERE)/sc300/ntt.S | $(OBJ_DIR_S8_AC)
 	@echo "  AS   $<  (ARMv7-M NTT, no DSP)"
 	$(ARMCLANG) $(CFLAGS) -c $< -o $@
 
+$(OBJ_DIR_S8_AC)/dilithium_kernels.o: $(HERE)/sc300/dilithium_kernels.S | $(OBJ_DIR_S8_AC)
+	@echo "  AS   $<  (pointwise/reduce/caddq, no DSP)"
+	$(ARMCLANG) $(CFLAGS) -c $< -o $@
+
 # ------------------------------------------------------------------ #
 # Link
 # ------------------------------------------------------------------ #
@@ -243,7 +249,8 @@ SRCS_C_44 := \
 SRCS_S_44 := \
     $(COMMON)/keccakf1600.S \
     $(COMMON)/mps2/startup_MPS2.S \
-    $(HERE)/sc300/ntt.S
+    $(HERE)/sc300/ntt.S \
+    $(HERE)/sc300/dilithium_kernels.S
 
 OBJS_C_44 := $(addprefix $(OBJ_DIR_44_AC)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_44))))
 OBJS_S_44 := $(addprefix $(OBJ_DIR_44_AC)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_44))))
@@ -312,15 +319,21 @@ CFLAGS_KEM768 := \
     -I$(MCOMMON) -I$(HERE)/cmsis -I$(COMMON)/mps2 \
     $(EXTRA_CFLAGS)
 
+#  - sc300_kem/indcpa.c REPLACES ref_kem/indcpa.c (streaming A/A^T row generator;
+#    saves ~6 KB peak stack on KeyGen / Enc — the keep-everything-on-stack
+#    reference would otherwise blow past the 11 KB budget).
+#  - sc300_kem/ntt.c REPLACES ref_kem/ntt.c (forward/inverse NTT thunked into
+#    sc300_kem/kyber_kernels.S; basemul stays as C so ref_kem/poly.c works
+#    unmodified).
 SRCS_C_KEM768 := \
     $(HERE)/test/test_mlkem768_main.c \
     $(HERE)/test/hal_m3.c \
     $(MCOMMON)/fips202.c \
     $(COMMON)/randombytes.c \
     $(HERE)/ref_kem/cbd.c \
-    $(HERE)/ref_kem/indcpa.c \
+    $(HERE)/sc300_kem/indcpa.c \
     $(HERE)/ref_kem/kem.c \
-    $(HERE)/ref_kem/ntt.c \
+    $(HERE)/sc300_kem/ntt.c \
     $(HERE)/ref_kem/poly.c \
     $(HERE)/ref_kem/polyvec.c \
     $(HERE)/ref_kem/reduce.c \
@@ -336,7 +349,8 @@ SRCS_C_KEM768 := \
 
 SRCS_S_KEM768 := \
     $(COMMON)/keccakf1600.S \
-    $(COMMON)/mps2/startup_MPS2.S
+    $(COMMON)/mps2/startup_MPS2.S \
+    $(HERE)/sc300_kem/kyber_kernels.S
 
 OBJS_C_KEM768 := $(addprefix $(OBJ_DIR_KEM768_AC)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_KEM768))))
 OBJS_S_KEM768 := $(addprefix $(OBJ_DIR_KEM768_AC)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_KEM768))))

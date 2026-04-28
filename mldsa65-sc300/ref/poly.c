@@ -9,6 +9,19 @@
 #define DBENCH_START()
 #define DBENCH_STOP(t)
 
+/* SC300 hand-tuned asm hooks (see sc300/dilithium_kernels.S).
+ * Define MLDSA_SC300_ASM at compile time to route the per-coefficient hot
+ * paths (reduce32 / caddq / pointwise_montgomery) through pure ARMv7-M
+ * Thumb-2 assembly that processes 8 (reduce/caddq) or 3 (pointwise) coeffs
+ * per loop with no DSP-extension dependence. */
+#ifdef MLDSA_SC300_ASM
+extern void MLDSA_NAMESPACE(poly_reduce_asm)(int32_t *a);
+extern void MLDSA_NAMESPACE(poly_caddq_asm)(int32_t *a);
+extern void MLDSA_NAMESPACE(poly_pointwise_montgomery_asm)(int32_t *c,
+                                                            const int32_t *a,
+                                                            const int32_t *b);
+#endif
+
 /*************************************************
 * Name:        MLDSA_NAMESPACE(poly_reduce)
 *
@@ -18,13 +31,15 @@
 * Arguments:   - poly *a: pointer to input/output polynomial
 **************************************************/
 void MLDSA_NAMESPACE(poly_reduce)(poly *a) {
-    unsigned int i;
     DBENCH_START();
-
+#ifdef MLDSA_SC300_ASM
+    MLDSA_NAMESPACE(poly_reduce_asm)(a->coeffs);
+#else
+    unsigned int i;
     for (i = 0; i < N; ++i) {
         a->coeffs[i] = MLDSA_NAMESPACE(reduce32)(a->coeffs[i]);
     }
-
+#endif
     DBENCH_STOP(*tred);
 }
 
@@ -37,13 +52,15 @@ void MLDSA_NAMESPACE(poly_reduce)(poly *a) {
 * Arguments:   - poly *a: pointer to input/output polynomial
 **************************************************/
 void MLDSA_NAMESPACE(poly_caddq)(poly *a) {
-    unsigned int i;
     DBENCH_START();
-
+#ifdef MLDSA_SC300_ASM
+    MLDSA_NAMESPACE(poly_caddq_asm)(a->coeffs);
+#else
+    unsigned int i;
     for (i = 0; i < N; ++i) {
         a->coeffs[i] = MLDSA_NAMESPACE(caddq)(a->coeffs[i]);
     }
-
+#endif
     DBENCH_STOP(*tred);
 }
 
@@ -153,13 +170,15 @@ void MLDSA_NAMESPACE(poly_invntt_tomont)(poly *a) {
 *              - const poly *b: pointer to second input polynomial
 **************************************************/
 void MLDSA_NAMESPACE(poly_pointwise_montgomery)(poly *c, const poly *a, const poly *b) {
-    unsigned int i;
     DBENCH_START();
-
+#ifdef MLDSA_SC300_ASM
+    MLDSA_NAMESPACE(poly_pointwise_montgomery_asm)(c->coeffs, a->coeffs, b->coeffs);
+#else
+    unsigned int i;
     for (i = 0; i < N; ++i) {
         c->coeffs[i] = MLDSA_NAMESPACE(montgomery_reduce)((int64_t)a->coeffs[i] * b->coeffs[i]);
     }
-
+#endif
     DBENCH_STOP(*tmul);
 }
 

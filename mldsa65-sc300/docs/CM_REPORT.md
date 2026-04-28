@@ -18,15 +18,31 @@
 | `vendor/pqm4-common/keccakf1600.S` | pqm4 (MIT/CC0) | LE 빌드 전용 |
 | `vendor/mupq-common/keccakf1600.c` | pqm4 (이식성 fallback) | BE 빌드용 |
 
-**pqm3 crypto_kem 어셈블리 추가 포팅은 이번 PR 범위에서 스킵.** 사유:
-- pqm3 은 Cortex-M4 DSP 명령(SMLAD 등) 가정 — SC300(Cortex-M3) 비호환
-- ARMClang 어셈블러 문법으로 재작성하려면 사이클-레벨 검증이 필요한데
-  실기 SC300 보드가 없는 환경에서는 잘못 포팅 시 회귀 위험이 큼
-- 기존 `sc300/ntt.S` 가 동일 알고리즘에 대한 최적화 NTT를 이미 제공
+이번 단계에 새로 포팅한 부분 (pqm3 / Markus Krausz · `mupq/pqm3`, MIT/CC0):
+
+| 파일 | 출처 | 적용 함수 | 비고 |
+|---|---|---|---|
+| `sc300_kem/kyber_kernels.S` | pqm3 `crypto_kem/kyber768/m3/{fastnttm3,fastinvnttm3,kyberm3}.S` | `ntt_fast_m3`, `invntt_fast_m3`, `pointwise_add/sub_m3`, `asm_barrett_reduce_m3`, `asm_frommont_m3`, `basemul_asm{,_acc}_m3`, `doublebasemul_asm{,_acc}_m3` | 순수 ARMv7-M (mul/mla/sxth/asr); pqm3 측정치 기준 ML-KEM keygen/enc/dec ≈ **+30%** |
+| `sc300_kem/ntt.c` | 본 PR (pqm3 zetas 테이블 + asm 래퍼) | `PQCLEAN_MLKEM768_CLEAN_{ntt,invntt,zetas,zetas_asm,zetas_inv_asm,zetas_basemul,basemul}` | `ref_kem/ntt.c` 를 빌드에서 완전 대체 |
+| `sc300/dilithium_kernels.S` | pqm3 `crypto_sign/dilithium2/m3/{pointwise_smull.S,vector.s}` | `PQCLEAN_MLDSA{44,65}_CLEAN_poly_pointwise_montgomery_asm`, `_poly_reduce_asm`, `_poly_caddq_asm` | 순수 ARMv7-M (smull/smlal/mul); pqm3 측정치 기준 ML-DSA verify ≈ **+30%**, sign 폴리곱 핫패스 단축 |
+
+**참고:** pqm3 은 Cortex-M3 (no DSP) 전용 변종이다 (M4 변종은 별도의 `pqm4` 저장소).
+이번 단계에서는 pqm3 의 어셈블리 중 SC300 (ARMv7-M base) 에서 그대로 동작하는 항목만 가져왔고, `smlad`/`pkhbt` 등 DSP-extension 의존 변종 (`ntt1_asm.S`, `intt_asm.S`, `pointwise_mul.S`)은 의도적으로 제외했다.
+
+**ARMClang v6.22 호환성:** 어셈블리는 GAS 통합-호환 문법(`-mcpu=cortex-m3 -mthumb`)으로 작성되어 있으며, 기존 `sc300/ntt.S` 와 동일한 directive 집합 (`.syntax unified` / `.thumb` / `.thumb_func` / `.req` / `.set`-alias) 만 사용한다. 다중-라벨 함수 진입점은 `.set` 별칭으로 처리해 thumb-bit 마킹 결정성을 확보했다.
+
+**C 측 라우팅 (-DMLDSA_SC300_ASM):**
+
+- `ref/poly.c` 의 `MLDSA_NAMESPACE(poly_reduce)`, `_poly_caddq`, `_poly_pointwise_montgomery` 는 `MLDSA_SC300_ASM` 정의 시 1-라인 어셈블리 호출로 분기 (`#ifdef`) — 미정의 시 기존 reference C 루프로 fallback. 4 종 Makefile (`Makefile.gcc{,.lib}`, `Makefile.armclang{,.lib}`) 의 `CFLAGS` 모두 `-DMLDSA_SC300_ASM` 추가됨.
+- ML-KEM 측은 `sc300_kem/ntt.c` 의 `PQCLEAN_MLKEM768_CLEAN_ntt` / `_invntt` 가 `ntt_fast_m3` / `invntt_fast_m3` 를 직접 extern-call → toggle flag 불필요 (어셈블리 경로가 항상 활성).
 
 ### 1.2 C 최적화 현황
 
-`sc300_kem/indcpa.c` 의 streaming A-row 변형으로 KeyGen / Enc 의 stack peak 를 약 **6 KB** 감소시키는 최적화가 이미 적용돼 있다 (트리 기존 작업). 본 PR 에서는 그 위에 CM 모듈을 추가하면서 추가 stack 증가가 11 KB 한계 안에 들도록 다음을 준수:
+`sc300_kem/indcpa.c` 의 streaming A-row 변형으로 KeyGen / Enc 의 stack peak 를 약 **6 KB** 감소시키는 최적화가 이미 적용돼 있다 (트리 기존 작업).
+
+**버그 발견 / 수정 (이번 단계):** `Makefile.armclang` 의 ML-KEM-768 빌드 (`SRCS_C_KEM768`) 가 `ref_kem/indcpa.c` (스택-과다 reference) 를 가리키고 있어 streaming 최적화가 실제로 ARMClang 빌드에는 적용되지 않고 있었다. `sc300_kem/indcpa.c` 로 교체했다 (이미 `Makefile.gcc` / `sources.mk` 측에서는 정상 적용 중이었음).
+
+본 PR 에서는 그 위에 CM 모듈을 추가하면서 추가 stack 증가가 11 KB 한계 안에 들도록 다음을 준수:
 
 | 모듈 | Stack 추가 | 비고 |
 |---|---|---|

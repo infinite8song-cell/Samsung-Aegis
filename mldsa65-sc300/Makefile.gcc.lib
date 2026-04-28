@@ -87,6 +87,7 @@ CFLAGS_BASE := \
     $(WCHAR_FLAG) \
     $(DEBUG_FLAG) \
     -DPQM4 -DMLDSA_NO_RANDOMBYTES \
+    -DMLDSA_SC300_ASM \
     -I$(HERE)/ref \
     -I$(HERE)/sc300 \
     -I$(MCOMMON) \
@@ -135,8 +136,9 @@ OBJS_44_C  := $(addprefix $(OBJ_44)/,$(notdir $(patsubst %.c,%.o,$(SRCS_MODE_C))
 OBJS_COM_C := $(addprefix $(OBJ_COM)/,$(notdir $(patsubst %.c,%.o,$(SRCS_COMMON_C))))
 OBJS_COM_S := $(addprefix $(OBJ_COM)/,$(notdir $(patsubst %.S,%.o,$(SRCS_COMMON_S))))
 OBJS_KEM_C := $(addprefix $(OBJ_KEM)/,$(notdir $(patsubst %.c,%.o,$(IMPL_SRCS_LIB_KEM768_C))))
+OBJS_KEM_S := $(addprefix $(OBJ_KEM)/,$(notdir $(patsubst %.S,%.o,$(IMPL_SRCS_KEM768_S))))
 
-OBJS := $(OBJS_65_C) $(OBJS_65_S) $(OBJS_44_C) $(OBJS_COM_C) $(OBJS_COM_S) $(OBJS_KEM_C)
+OBJS := $(OBJS_65_C) $(OBJS_65_S) $(OBJS_44_C) $(OBJS_COM_C) $(OBJS_COM_S) $(OBJS_KEM_C) $(OBJS_KEM_S)
 
 .PHONY: all lib clean clean-all info
 
@@ -168,10 +170,14 @@ $(OBJ_44)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_44)
 endef
 $(foreach src,$(SRCS_MODE_C),$(eval $(call CC44_RULE,$(src))))
 
-# ---- ntt.S: compiled once under m65 (m44 symbols are aliases inside the asm) ----
-$(OBJ_65)/$(notdir $(patsubst %.S,%.o,$(IMPL_SRCS_SC300_S))): $(IMPL_SRCS_SC300_S) | $(OBJ_65)
-	@echo "  AS65 $<"
-	$(CC) $(CFLAGS_BASE) -c $< -o $@
+# ---- sc300 hand-written assembly (ntt.S + dilithium_kernels.S) ----
+# Compiled once under m65 (m44 symbols are aliases inside each .S file).
+define AS65_RULE
+$(OBJ_65)/$(notdir $(patsubst %.S,%.o,$(1))): $(1) | $(OBJ_65)
+	@echo "  AS65 $$<"
+	$(CC) $(CFLAGS_BASE) -c $$< -o $$@
+endef
+$(foreach src,$(IMPL_SRCS_SC300_S),$(eval $(call AS65_RULE,$(src))))
 
 # ---- Common (mode-independent) C rules ----
 define CC_COM_RULE
@@ -196,6 +202,14 @@ $(OBJ_KEM)/$(notdir $(patsubst %.c,%.o,$(1))): $(1) | $(OBJ_KEM)
 	$(CC) $(CFLAGS_KEM) -c $$< -o $$@
 endef
 $(foreach src,$(IMPL_SRCS_LIB_KEM768_C),$(eval $(call CC_KEM_RULE,$(src))))
+
+# ---- ML-KEM-768 assembly rules (sc300_kem/kyber_kernels.S) ----
+define AS_KEM_RULE
+$(OBJ_KEM)/$(notdir $(patsubst %.S,%.o,$(1))): $(1) | $(OBJ_KEM)
+	@echo "  ASKEM $$<"
+	$(CC) $(CFLAGS_KEM) -c $$< -o $$@
+endef
+$(foreach src,$(IMPL_SRCS_KEM768_S),$(eval $(call AS_KEM_RULE,$(src))))
 
 $(LIB): $(OBJS)
 	@echo "  AR   $@"

@@ -31,12 +31,14 @@ IMPL_SRCS_CM_C := \
     $(HERE)/sc300/cm_rice_checksum.c
 
 # ------------------------------------------------------------------ #
-# ML-KEM-768 clean reference (PQClean)                                 #
+# ML-KEM-768 clean reference (PQClean) — sc300_kem/ overrides:        #
+#   indcpa.c → streaming A/A^T row gen (saves ~6 KB stack peak).       #
+#   ntt.c    → ntt/invntt thunk into pqm3-derived ARMv7-M assembly.    #
 # ------------------------------------------------------------------ #
 IMPL_SRCS_REF_KEM768 := \
     $(HERE)/ref_kem/cbd.c \
     $(HERE)/ref_kem/kem.c \
-    $(HERE)/ref_kem/ntt.c \
+    $(HERE)/sc300_kem/ntt.c \
     $(HERE)/ref_kem/poly.c \
     $(HERE)/ref_kem/polyvec.c \
     $(HERE)/ref_kem/reduce.c \
@@ -45,6 +47,10 @@ IMPL_SRCS_REF_KEM768 := \
     $(HERE)/sc300_kem/indcpa.c \
     $(HERE)/sc300_kem/kem_cm.c \
     $(IMPL_SRCS_CM_C)
+
+# Hand-tuned Kyber/ML-KEM ARMv7-M assembly (NTT, INVNTT, basemul, frommont,
+# barrett_reduce, pointwise add/sub).  Linked alongside IMPL_SRCS_REF_KEM768.
+IMPL_SRCS_KEM768_S := $(HERE)/sc300_kem/kyber_kernels.S
 
 # Pristine PQClean reference sign.c / ntt.c kept in tree for audit, but
 # NOT linked by any active build -- every target uses sc300/sign.c and
@@ -68,8 +74,13 @@ IMPL_SRCS_SC300_C := \
     $(HERE)/sc300/masked_ba.c \
     $(IMPL_SRCS_CM_C)
 
-# Hand-tuned ARMv7-M NTT (endian-safe; always included)
-IMPL_SRCS_SC300_S := $(HERE)/sc300/ntt.S
+# Hand-tuned ARMv7-M NTT + Dilithium scalar kernels (endian-safe; always
+# included).  dilithium_kernels.S provides ARMv7-M-only pointwise_montgomery /
+# poly_reduce_asm / poly_caddq_asm, used by ref/poly.c when MLDSA_SC300_ASM
+# is set in CFLAGS.
+IMPL_SRCS_SC300_S := \
+    $(HERE)/sc300/ntt.S \
+    $(HERE)/sc300/dilithium_kernels.S
 
 # ------------------------------------------------------------------ #
 # SHA-3 / SHAKE                                                        #

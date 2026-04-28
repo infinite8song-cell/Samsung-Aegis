@@ -61,6 +61,7 @@ ARCH_FLAGS := -mcpu=cortex-m3 -mthumb
 CFLAGS := $(ARCH_FLAGS) \
           -O2 -std=gnu99 -Wall -Wextra -fno-common \
           -DPQM4 -DMPS2_AN385 -DMUPQ_NAMESPACE= \
+          -DMLDSA_SC300_ASM \
           -I$(MCOMMON) -I$(HERE)/cmsis -I$(COMMON)/mps2 \
           -I$(HERE)/ref -I$(HERE)/sc300 \
           $(EXTRA_CFLAGS)
@@ -71,6 +72,7 @@ CFLAGS := $(ARCH_FLAGS) \
 HARNESS_CFLAGS := $(ARCH_FLAGS) \
                   -O1 -std=gnu99 -fno-common \
                   -DPQM4 -DMPS2_AN385 -DMUPQ_NAMESPACE= \
+                  -DMLDSA_SC300_ASM \
                   -I$(MCOMMON) -I$(HERE)/cmsis -I$(COMMON)/mps2 \
                   -I$(HERE)/ref -I$(HERE)/sc300
 
@@ -171,6 +173,9 @@ $(OBJ_DIR_S8)/startup_MPS2.o: $(COMMON)/mps2/startup_MPS2.S | $(OBJ_DIR_S8)
 $(OBJ_DIR_S8)/ntt.o: $(HERE)/sc300/ntt.S | $(OBJ_DIR_S8)
 	@echo "  AS   $<  (ARMv7-M NTT)"
 	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR_S8)/dilithium_kernels.o: $(HERE)/sc300/dilithium_kernels.S | $(OBJ_DIR_S8)
+	@echo "  AS   $<  (pointwise/reduce/caddq)"
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # ---- linker script (generated from MPS2.ld template) ----
 $(OUT)/ldscript.ld: $(COMMON)/mps2/MPS2.ld | $(OUT)
@@ -266,6 +271,9 @@ $(OBJ_DIR_44)/startup_MPS2.o: $(COMMON)/mps2/startup_MPS2.S | $(OBJ_DIR_44)
 	$(CC) $(CFLAGS) -DDATA_IN_FLASH -I$(COMMON)/mps2 -c $< -o $@
 $(OBJ_DIR_44)/ntt.o: $(HERE)/sc300/ntt.S | $(OBJ_DIR_44)
 	@echo "  AS   $<  (ARMv7-M NTT)"
+	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR_44)/dilithium_kernels.o: $(HERE)/sc300/dilithium_kernels.S | $(OBJ_DIR_44)
+	@echo "  AS   $<  (pointwise/reduce/caddq)"
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OUT)/mldsa44_test.elf: $(OBJS_44) $(OUT)/ldscript.ld | $(OUT)
@@ -420,7 +428,8 @@ SRCS_C_KEM768 := \
 
 SRCS_S_KEM768 := \
     $(IMPL_SRCS_KECCAK_ASM) \
-    $(IMPL_SRCS_MPS2_STARTUP_S)
+    $(IMPL_SRCS_MPS2_STARTUP_S) \
+    $(IMPL_SRCS_KEM768_S)
 
 OBJS_C_KEM768 := $(addprefix $(OBJ_DIR_KEM768)/,$(notdir $(patsubst %.c,%.o,$(SRCS_C_KEM768))))
 OBJS_S_KEM768 := $(addprefix $(OBJ_DIR_KEM768)/,$(notdir $(patsubst %.S,%.o,$(SRCS_S_KEM768))))
@@ -468,6 +477,9 @@ $(OBJ_DIR_KEM768)/keccakf1600.o: $(COMMON)/keccakf1600.S | $(OBJ_DIR_KEM768)
 $(OBJ_DIR_KEM768)/startup_MPS2.o: $(COMMON)/mps2/startup_MPS2.S | $(OBJ_DIR_KEM768)
 	@echo "  ASKEM $<"
 	$(CC) $(KEM768_CFLAGS) -DDATA_IN_FLASH -I$(COMMON)/mps2 -c $< -o $@
+$(OBJ_DIR_KEM768)/kyber_kernels.o: $(HERE)/sc300_kem/kyber_kernels.S | $(OBJ_DIR_KEM768)
+	@echo "  ASKEM $<  (Kyber NTT/INVNTT/basemul/frommont/reduce)"
+	$(CC) $(KEM768_CFLAGS) -c $< -o $@
 $(OBJ_DIR_KEM768)/libc_stubs.o: $(COMMON)/libc_stubs.c | $(OBJ_DIR_KEM768)
 	@echo "  CCKEM $<"
 	$(CC) $(KEM768_CFLAGS) -c $< -o $@
