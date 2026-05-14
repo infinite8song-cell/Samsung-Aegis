@@ -7,7 +7,8 @@ import sys
 
 WIDTH = 8448
 HEIGHT = 160
-BORDER = 16
+BOARDL = 16
+BOARDR = 16
 
 
 def load_bits(path):
@@ -37,7 +38,10 @@ def main():
     ap.add_argument("expect_file", help="path to the 1-D 0/1 expect file")
     ap.add_argument("--width", type=int, default=WIDTH)
     ap.add_argument("--height", type=int, default=HEIGHT)
-    ap.add_argument("--border", type=int, default=BORDER)
+    ap.add_argument("--boardl", type=int, default=BOARDL,
+                    help="number of left border columns to check")
+    ap.add_argument("--boardr", type=int, default=BOARDR,
+                    help="number of right border columns to check")
     ap.add_argument("--per-row", action="store_true",
                     help="also print the per-row counts")
     args = ap.parse_args()
@@ -54,16 +58,17 @@ def main():
     left_total = 0
     right_total = 0
     for idx, row in enumerate(rows):
-        left = sum(row[:args.border])
-        right = sum(row[-args.border:])
+        left = sum(row[:args.boardl])
+        right = sum(row[args.width - args.boardr:])
         left_total += left
         right_total += right
         if args.per_row:
             print(f"row {idx:4d}: left={left:3d} right={right:3d}")
 
-    print(f"width={args.width} height={args.height} border={args.border}")
-    print(f"left  {args.border} cols: {left_total} ones")
-    print(f"right {args.border} cols: {right_total} ones")
+    print(f"width={args.width} height={args.height} "
+          f"boardl={args.boardl} boardr={args.boardr}")
+    print(f"left  {args.boardl} cols: {left_total} ones")
+    print(f"right {args.boardr} cols: {right_total} ones")
     print(f"total border ones: {left_total + right_total}")
 
 
