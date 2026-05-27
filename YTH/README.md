@@ -1,4 +1,13 @@
-# Excel → Markdown 변환기
+# YTH 변환 스크립트 모음
+
+이 폴더에는 형식 간 변환을 도와주는 파이썬 스크립트 두 개가 들어 있다.
+
+- `excel_to_markdown.py` — Excel(.xlsx/.xls) → Markdown(.md)
+- `docx_to_hwp.py` — Word(.docx) → 한글(.hwp)
+
+---
+
+## Excel → Markdown 변환기
 
 `excel_to_markdown.py`는 Excel 파일(`.xlsx`, `.xls`)을 읽어 모든 시트의 내용을
 **GitHub Flavored Markdown 표** 형식으로 저장하는 파이썬 스크립트다.
@@ -22,6 +31,37 @@ python excel_to_markdown.py input.xlsx --sheet Sheet1
 출력 파일에는 시트 이름이 `## 시트: 이름` 헤더로 들어가고, 그 아래에 표가 만들어진다.
 셀에 포함된 `|` 문자는 `\|` 로 이스케이프되고, 줄바꿈은 `<br>` 로 치환되어 표가
 깨지지 않는다.
+
+---
+
+## DOCX → HWP 변환기
+
+`docx_to_hwp.py`는 Microsoft Word 파일(`.docx`)을 한글(`.hwp`) 파일로 변환한다.
+HWP는 한글과컴퓨터의 독점 바이너리 포맷이라 순수 파이썬만으로는 손실 없이 직접
+기록할 수 없으므로, 시스템에 설치된 외부 엔진을 백엔드로 호출한다.
+
+| 백엔드 | 요구 사항 | 비고 |
+| --- | --- | --- |
+| `pyhwpx` | Windows + 한컴오피스(아래아한글) 설치 | 변환 품질 가장 좋음 (한컴 공식 변환기 사용) |
+| `soffice` | LibreOffice (hwp export 필터 포함 빌드) | 크로스플랫폼, 일부 서식 손실 가능 |
+
+```bash
+# Windows + 한컴오피스
+pip install pyhwpx
+python docx_to_hwp.py input.docx
+
+# Linux/macOS (LibreOffice 경유)
+sudo apt install libreoffice          # 또는 brew install libreoffice
+python docx_to_hwp.py input.docx -o out.hwp
+
+# 백엔드 강제 지정
+python docx_to_hwp.py input.docx --backend pyhwpx
+```
+
+자동 탐색 모드(`--backend` 미지정)에서는 pyhwpx → soffice 순서로 시도하고,
+모두 실패하면 각 백엔드의 실패 사유를 묶어서 출력한다. LibreOffice 빌드에 따라
+hwp 필터가 빠져 있을 수 있으니, 변환이 실패하면 한컴오피스가 설치된 환경에서
+`pyhwpx`로 다시 시도하는 것이 가장 확실하다.
 
 ---
 
