@@ -63,6 +63,9 @@ python docx_to_hwp.py input.docx --backend pyhwpx
 hwp 필터가 빠져 있을 수 있으니, 변환이 실패하면 한컴오피스가 설치된 환경에서
 `pyhwpx`로 다시 시도하는 것이 가장 확실하다.
 
+> **Windows에서 처음부터 따라하기**: 파이썬 설치 → venv → pyhwpx 설치 →
+> 실행까지의 상세 가이드는 [`WINDOWS_SETUP.md`](./WINDOWS_SETUP.md) 참고.
+
 ---
 
 ## 마크다운(Markdown)이란?
