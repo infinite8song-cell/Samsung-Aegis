@@ -1,0 +1,19 @@
+# Generated analysis output
+**/asi_report/
+**/asi_report_*/
+
+# gcov / llvm-cov instrumentation artifacts
+*.gcno
+*.gcda
+*.gcov
+*.gcov.json.gz
+*.profraw
+*.profdata
+
+# Built demo binaries
+examples/c_demo/calc
+examples/c_demo/calc_llvm
+
+# Python caches
+__pycache__/
+*.pyc

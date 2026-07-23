@@ -1,0 +1,26 @@
+{
+  "name": "c_demo",
+  "backend": "gcov",
+  "build": {
+    "command": "./build.sh",
+    "workdir": "."
+  },
+  "gcov": {
+    "objdir": "."
+  },
+  "sources": {
+    "include": ["calc.c"]
+  },
+  "vectors": {
+    "manifest": "manifest.txt",
+    "base": "vectors"
+  },
+  "run": {
+    "command": "./calc {input}",
+    "workdir": "."
+  },
+  "report": {
+    "dir": "asi_report",
+    "formats": ["md", "json"]
+  }
+}

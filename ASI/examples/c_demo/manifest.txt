@@ -1,0 +1,4 @@
+# C demo test-vector manifest (paths relative to vectors.base)
+basic/v1.txt
+edge/v2.txt
+edge/v3.txt

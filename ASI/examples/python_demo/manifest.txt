@@ -1,0 +1,5 @@
+# Test-vector manifest: one input file per line, relative to vectors.base.
+# Blank lines and comments (#) are ignored; glob lines are expanded.
+group_a/case1.txt
+group_a/case3.txt
+group_b/deep/case2.txt

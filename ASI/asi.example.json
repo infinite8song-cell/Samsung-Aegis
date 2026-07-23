@@ -1,0 +1,44 @@
+{
+  "//": "ASI config template. Copy next to your project and edit. See GUIDE.md.",
+  "//keys": "Relative paths resolve against this file's directory (override with 'root').",
+
+  "name": "myproject",
+  "backend": "gcov",
+
+  "sources": {
+    "include": ["src/**/*.c"],
+    "exclude": ["**/test/**", "**/vendor/**"]
+  },
+
+  "vectors": {
+    "//": "Preferred: a text file listing one vector path per line.",
+    "manifest": "test_vectors/paths.txt",
+    "base": "test_vectors",
+    "//alt": "Or scan a nested folder instead of a manifest:",
+    "//dir": "test_vectors",
+    "//glob": "**/*"
+  },
+
+  "build": {
+    "command": "make coverage",
+    "workdir": "."
+  },
+
+  "gcov": {
+    "objdir": "build",
+    "tool": "gcov"
+  },
+
+  "run": {
+    "command": "./build/prog {input}",
+    "stdin": false,
+    "workdir": ".",
+    "timeout": 120,
+    "allow_failure": true
+  },
+
+  "report": {
+    "dir": "asi_report",
+    "formats": ["md", "json"]
+  }
+}

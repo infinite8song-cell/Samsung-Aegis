@@ -1,0 +1,19 @@
+{
+  "name": "python_demo",
+  "backend": "pytrace",
+  "sources": {
+    "include": ["mathlib.py"]
+  },
+  "vectors": {
+    "manifest": "manifest.txt",
+    "base": "vectors"
+  },
+  "run": {
+    "command": "solve.py {input}",
+    "workdir": "."
+  },
+  "report": {
+    "dir": "asi_report",
+    "formats": ["md", "json"]
+  }
+}
