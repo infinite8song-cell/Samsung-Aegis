@@ -55,6 +55,38 @@ else
     echo "  (skipped: gcc not available)"
 fi
 
+echo "== refactor: comment-only (python_demo) =="
+python3 -m asi refactor -c examples/python_demo/asi.json --comment-only \
+    --out "$HERE/.selftest_rf" >/dev/null 2>&1
+if python3 - "$HERE/.selftest_rf/mathlib.py" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+ns = {}
+exec(compile(src, sys.argv[1], "exec"), ns)   # must still compile
+# dead functions must no longer be defined; live ones must remain
+ok = ("unused_multiply" not in ns) and ("unused_power" not in ns) \
+     and ("add" in ns) and ("sub" in ns)
+sys.exit(0 if ok else 1)
+PY
+then
+    echo "  comment-only output valid; dead removed, live kept"
+else
+    echo "  FAILED: comment-only refactor output wrong"
+    fail=1
+fi
+
+echo "== refactor: LLM plumbing via mock provider (python_demo) =="
+if ASI_LLM_PROVIDER=mock python3 -m asi refactor -c examples/python_demo/asi.json \
+    --out "$HERE/.selftest_rf_llm" >/dev/null 2>&1 \
+    && python3 -c "ns={}; exec(open('$HERE/.selftest_rf_llm/mathlib.py').read(), ns); \
+import sys; sys.exit(0 if 'unused_multiply' not in ns and 'add' in ns else 1)"; then
+    echo "  mock LLM refactor produced valid output"
+else
+    echo "  FAILED: mock LLM refactor path"
+    fail=1
+fi
+rm -rf "$HERE/.selftest_rf" "$HERE/.selftest_rf_llm"
+
 if [ "$fail" -eq 0 ]; then
     echo "ALL CHECKS PASSED"
 else

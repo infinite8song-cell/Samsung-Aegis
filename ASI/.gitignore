@@ -2,6 +2,12 @@
 **/asi_report/
 **/asi_report_*/
 
+# Refactor stage output
+**/asi_refactored/
+*.asi.bak
+.selftest_rf/
+.selftest_rf_llm/
+
 # gcov / llvm-cov instrumentation artifacts
 *.gcno
 *.gcda

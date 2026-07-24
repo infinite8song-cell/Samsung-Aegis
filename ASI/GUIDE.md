@@ -7,6 +7,7 @@ This is the deep reference. For the pitch and quick start, see
 - [Configuration reference](#configuration-reference)
 - [Recipes](#recipes)
 - [Interpreting results correctly](#interpreting-results-correctly)
+- [The refactor stage](#the-refactor-stage)
 - [Adding a backend](#adding-a-backend)
 - [Troubleshooting](#troubleshooting)
 
@@ -226,6 +227,91 @@ PYTHONPATH=$PWD/ASI python3 -m asi run -c asi.json --fail-on-dead
 - **Whole-program vs. library.** ASI measures whatever your `run.command`
   drives. To judge a library, make the corpus drive the public API you care
   about.
+
+---
+
+## The refactor stage
+
+`asi refactor` turns the report into edits. It runs in two separable steps so
+correctness never depends on the model:
+
+```
+report.json ──► pick target files (dead-code files, or all with --all-files)
+                   │
+                   ▼   per file:
+            comment out dead functions        (deterministic, exact line ranges)
+                   │                            Python '#', C/C++ '#if 0…#endif', else '//'
+                   ▼
+            [unless --comment-only] LLM refactor the file
+                   │                            keep dead comments, preserve public API + behaviour
+                   ▼
+            verify  (Python: syntax; --in-place: refactor.verify build command)
+                   │
+             pass ─┴─ fail ──► discard, keep the safe commented-only version
+                   ▼
+            write (out dir, or --in-place with a .asi.bak backup)
+```
+
+The deterministic commenting is the guarantee: the dead code is disabled
+correctly regardless of what the model does, and any LLM output that fails
+verification is thrown away. The model can only ever improve *live* code.
+
+### Command
+
+```
+python3 -m asi refactor -c asi.json [options]
+
+  --comment-only   only comment out dead functions; no LLM, no API key
+  --out DIR        write refactored files under DIR (default: refactor.out)
+  --in-place       overwrite originals; a <file>.asi.bak backup is written
+  --all-files      refactor every analysed file, not just dead-code ones
+  --dry-run        report what would change; write nothing
+  --report PATH    report.json to use (default: <report.dir>/report.json)
+  -v, --verbose
+```
+
+Default scope is **files that contain dead code** — targeted and cheap. Use
+`--all-files` (or `refactor.scope: "all"`) to refactor the whole analysed
+codebase.
+
+### Config
+
+```json
+"refactor": {
+  "scope": "dead_files",              // "dead_files" (default) | "all"
+  "out": "asi_refactored",            // default output dir (out-of-place)
+  "verify": { "command": "make", "workdir": "." }   // optional; runs after --in-place
+},
+"llm": {
+  "provider": "anthropic",            // "anthropic" | "mock" (mock echoes input; for tests)
+  "model": "claude-opus-4-8",
+  "effort": "high",                   // low | medium | high | xhigh | max
+  "max_tokens": 32000
+}
+```
+
+- **Auth / SDK.** The LLM path uses the official Anthropic Python SDK
+  (`pip install anthropic`) — imported lazily, so ASI's core stays dependency
+  free and `--comment-only` needs nothing. Credentials resolve the standard
+  way: `ANTHROPIC_API_KEY`, or an `ant auth login` profile. Requests use
+  adaptive thinking and streaming (whole-file outputs can be large).
+- **`refactor.verify`.** For `--in-place`, this build/test command runs after
+  all files are written; if it fails, every file is **restored from its
+  `.asi.bak`**. It's the strongest safety net — e.g. `"command": "make coverage"`
+  for the gcov example. Not run for out-of-place output (the tree isn't intact
+  there); Python files are still per-file syntax-checked in both modes.
+- **`llm.provider: "mock"`** (or env `ASI_LLM_PROVIDER=mock`) echoes the input
+  back unchanged — it exercises the write/verify/fallback plumbing with no
+  network call, and is what the self-test uses.
+
+### Safety checklist
+
+1. Start with `--comment-only` or `--dry-run` to see the scope.
+2. Keep the working tree under version control; review the diff.
+3. Prefer an output dir first; use `--in-place` only once you trust the result.
+4. **Re-run `asi run` after refactoring** — the same corpus should still pass
+   and the same live functions should still execute. This closes the loop:
+   the tool that found the dead code also validates the edit.
 
 ---
 

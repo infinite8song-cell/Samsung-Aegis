@@ -59,6 +59,9 @@ asked. Dynamic coverage answers exactly that question.
 Output: a terminal summary, `report.json` (machine-readable, CI-friendly), and
 `report.md` (review-friendly, grouped by file).
 
+6. **(Optional) Acts on the report** — `asi refactor` comments out the dead
+   functions and can LLM-refactor the rest. See below.
+
 ---
 
 ## Backends (languages / toolchains)
@@ -177,6 +180,49 @@ generating a patch) is mechanical.
 
 ---
 
+## Acting on the report: `asi refactor`
+
+The report *finds* dead code; `asi refactor` *acts* on it. It comments out the
+dead functions and, optionally, uses an LLM to refactor the rest of the file —
+in two clearly separated steps so correctness never depends on the model:
+
+1. **Deterministic commenting (always safe).** Using the exact line ranges from
+   the report, ASI disables each dead function — Python with `#`, C/C++ with
+   `#if 0 … #endif`, others with `//`. This is exact and needs no API key.
+2. **LLM refactor (optional).** The already-dead-commented file is sent to
+   Claude with strict rules: keep the dead functions commented, preserve the
+   public API and observable behaviour of the live code, output only the file.
+   The result is **verified** (Python is syntax-checked; an optional
+   `refactor.verify` build command runs for `--in-place`), and any output that
+   fails verification is **discarded in favour of the safe commented-only
+   version**. So the model can only ever improve the live code — it can never
+   produce broken or dead-code-reviving output that gets written.
+
+```bash
+# Safest: just comment out the dead functions (no API key, no model).
+python3 -m asi refactor -c asi.json --comment-only --out asi_refactored
+
+# Full LLM refactor (needs: pip install anthropic, and ANTHROPIC_API_KEY or
+# `ant auth login`). Writes to an output dir by default; --in-place keeps .asi.bak.
+python3 -m asi refactor -c asi.json --out asi_refactored
+python3 -m asi refactor -c asi.json --in-place        # overwrite, with backups
+python3 -m asi refactor -c asi.json --dry-run          # preview, write nothing
+python3 -m asi refactor -c asi.json --all-files        # refactor every file, not just dead-code ones
+```
+
+By default only files that **contain dead code** are processed (targeted and
+cheap). `--all-files` (or `refactor.scope: "all"`) refactors the whole analysed
+codebase. The LLM stage uses `claude-opus-4-8` with adaptive thinking and
+streaming; model/effort are configurable under `llm` in the config. See
+[GUIDE.md](GUIDE.md#the-refactor-stage) for the full reference.
+
+> ⚠️ An LLM refactor rewrites live code. Always review the diff (or start with
+> `--comment-only`), keep the run under version control, and re-run
+> `asi run` afterwards to confirm the live functions still execute and the
+> vectors still pass.
+
+---
+
 ## 한국어 안내
 
 **무엇을 하나요?** 테스트 벡터(입력 파일)들을 실제로 실행시켜서, **함수 단위로
@@ -201,5 +247,23 @@ harness로 만들었습니다.
 **주의**: "죽음"의 기준은 **주어진 벡터 corpus 기준**입니다. 벡터가 실제 사용을
 충분히 대표하지 못하면 살아있는 함수도 죽은 것처럼 보일 수 있으니, dead 목록은
 바로 삭제하지 말고 *검토 후보*로 다루세요.
+
+**리팩토링 단계 (`asi refactor`)**: 리포트 결과를 바탕으로 (1) 사용하지 않는
+함수를 **결정론적으로 주석 처리**하고 (Python `#`, C/C++ `#if 0`, 기타 `//`),
+(2) 선택적으로 **LLM(Claude)으로 나머지 코드를 리팩토링**합니다. 두 단계는
+분리되어 있어 정확성이 모델에 의존하지 않습니다 — 주석 처리는 리포트의 정확한
+줄 범위로 항상 올바르게 되고, LLM 출력은 검증(Python 문법 검사 / 선택적 빌드
+명령)을 통과하지 못하면 **안전한 주석-only 버전으로 자동 폴백**됩니다.
+
+```bash
+# 가장 안전: 죽은 함수만 주석 처리 (API 키 불필요)
+python3 -m asi refactor -c asi.json --comment-only --out asi_refactored
+# 전체 LLM 리팩토링 (pip install anthropic + ANTHROPIC_API_KEY 필요)
+python3 -m asi refactor -c asi.json --out asi_refactored   # --in-place / --dry-run / --all-files
+```
+
+LLM 단계는 `claude-opus-4-8`(adaptive thinking, streaming)을 사용하며 `llm`
+설정으로 모델·effort를 바꿀 수 있습니다. LLM 리팩토링은 살아있는 코드를 다시
+쓰므로 반드시 diff를 검토하고, 이후 `asi run`을 다시 돌려 동작을 확인하세요.
 
 자세한 설정과 backend 추가 방법은 [GUIDE.md](GUIDE.md)에 있습니다.

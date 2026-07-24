@@ -40,5 +40,20 @@
   "report": {
     "dir": "asi_report",
     "formats": ["md", "json"]
+  },
+
+  "//refactor": "Used by `asi refactor` — comment out dead code + LLM-refactor.",
+  "refactor": {
+    "scope": "dead_files",
+    "out": "asi_refactored",
+    "//verify": "Optional build/test command run after an --in-place refactor.",
+    "verify": { "command": "make coverage", "workdir": "." }
+  },
+
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-opus-4-8",
+    "effort": "high",
+    "max_tokens": 32000
   }
 }

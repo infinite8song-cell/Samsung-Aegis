@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from . import __version__
@@ -10,6 +11,7 @@ from .backends import available
 from .config import ConfigError, load_config
 from .engine import analyze
 from .manifest import resolve_vectors
+from .refactor import refactor as run_refactor
 from .report import print_summary, write_reports
 
 
@@ -41,6 +43,54 @@ def _cmd_list_vectors(args) -> int:
     return 0
 
 
+def _cmd_refactor(args) -> int:
+    cfg = load_config(args.config)
+    report_path = args.report or os.path.join(
+        cfg.path(cfg.get("report", "dir", default="asi_report")), "report.json")
+    if not os.path.isfile(report_path):
+        sys.stderr.write(
+            "[asi] report not found: %s\n[asi] run `asi run -c %s` first, "
+            "or pass --report\n" % (report_path, args.config))
+        return 2
+
+    scope = "all" if args.all_files else cfg.get("refactor", "scope", default="dead_files")
+    out_dir = args.out or cfg.path(cfg.get("refactor", "out", default="asi_refactored"))
+
+    result = run_refactor(
+        cfg, report_path=report_path, out_dir=out_dir,
+        in_place=args.in_place, comment_only=args.comment_only,
+        dry_run=args.dry_run, scope=scope, verbose=args.verbose)
+
+    _print_refactor_summary(result)
+    return 0
+
+
+def _print_refactor_summary(result) -> None:
+    mode = "comment-only" if result.comment_only else "LLM refactor"
+    where = "in place (.asi.bak backups)" if result.in_place else result.out_dir
+    if result_is_dry(result):
+        where = "dry-run (nothing written)"
+    sys.stdout.write("\n" + "=" * 60 + "\n")
+    sys.stdout.write("ASI refactor (%s)\n" % mode)
+    sys.stdout.write("=" * 60 + "\n")
+    sys.stdout.write("  output: %s\n\n" % where)
+    for o in result.outcomes:
+        line = "  %-22s %-20s dead=%d" % (o.file, o.action, o.dead_count)
+        if o.diff_lines:
+            line += " (+/- %d diff lines)" % o.diff_lines
+        sys.stdout.write(line + "\n")
+        if o.note:
+            sys.stdout.write("        note: %s\n" % o.note)
+    if result.verify_ok is True:
+        sys.stdout.write("\n  verify command: PASSED\n")
+    elif result.verify_ok is False:
+        sys.stdout.write("\n  verify command: FAILED — files restored from .asi.bak\n")
+
+
+def result_is_dry(result) -> bool:
+    return any(o.wrote_to == "(dry-run)" for o in result.outcomes)
+
+
 def _cmd_backends(_args) -> int:
     sys.stdout.write("Available backends:\n")
     for b in available():
@@ -69,6 +119,23 @@ def build_parser() -> argparse.ArgumentParser:
     lv = sub.add_parser("list-vectors", help="print the resolved test-vector paths and exit")
     lv.add_argument("-c", "--config", required=True)
     lv.set_defaults(func=_cmd_list_vectors)
+
+    rf = sub.add_parser(
+        "refactor",
+        help="comment out dead functions and LLM-refactor the code (uses the report)")
+    rf.add_argument("-c", "--config", required=True)
+    rf.add_argument("--report", help="path to report.json (default: from config's report.dir)")
+    rf.add_argument("-o", "--out", help="output directory for refactored files")
+    rf.add_argument("--in-place", action="store_true",
+                    help="overwrite the originals (a .asi.bak backup is kept)")
+    rf.add_argument("--comment-only", action="store_true",
+                    help="only comment out dead functions; skip the LLM step (no API key needed)")
+    rf.add_argument("--all-files", action="store_true",
+                    help="refactor every analysed source file, not just those with dead code")
+    rf.add_argument("--dry-run", action="store_true",
+                    help="show what would change without writing")
+    rf.add_argument("-v", "--verbose", action="store_true")
+    rf.set_defaults(func=_cmd_refactor)
 
     be = sub.add_parser("backends", help="list available language backends")
     be.set_defaults(func=_cmd_backends)
