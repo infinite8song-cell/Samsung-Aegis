@@ -216,6 +216,16 @@ codebase. The LLM stage uses `claude-opus-4-8` with adaptive thinking and
 streaming; model/effort are configurable under `llm` in the config. See
 [GUIDE.md](GUIDE.md#the-refactor-stage) for the full reference.
 
+### No API key? Use the agent skill instead
+
+If you'd rather have **Claude Code drive the refactor itself** — reading the
+report and editing files with its own tools, instead of a script calling the
+API — this repo ships a project skill at
+[`.claude/skills/asi-refactor`](../.claude/skills/asi-refactor/SKILL.md). It uses
+the deterministic, API-free `--comment-only` step for the exact commenting, then
+the agent refactors the live code and re-runs `asi run` to verify. Trigger it by
+asking to "apply the ASI report" / "refactor based on the dead-code report".
+
 > ⚠️ An LLM refactor rewrites live code. Always review the diff (or start with
 > `--comment-only`), keep the run under version control, and re-run
 > `asi run` afterwards to confirm the live functions still execute and the
